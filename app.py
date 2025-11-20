@@ -26,17 +26,20 @@ def norm(s) -> str:
         return ""
     return "".join(str(s).split()).lower()
 
-# 📝 REPLACE THE FOLLOWING FUNCTION
-# def clean_header(header: str) -> str:
-#     return header.replace(".", " ").strip()
-
-# 🚀 WITH THIS CORRECTED AND ROBUST VERSION
+# Improved header cleaner: remove special characters (keep letters, numbers and spaces),
+# collapse multi spaces, strip leading/trailing spaces
 def clean_header(header) -> str:
-    # Ensure the header is a string before performing string operations
     if pd.isna(header):
         return ""
     header_str = str(header)
-    return header_str.replace(".", " ").strip()
+    # replace dots with space first (original behavior)
+    # then remove any character that is not a letter, digit or space
+    header_str = header_str.replace(".", " ")
+    # keep letters, numbers and spaces only
+    header_str = re.sub(r"[^A-Za-z0-9\s]", "", header_str)
+    # collapse multiple spaces to a single space and strip
+    header_str = re.sub(r"\s+", " ", header_str).strip()
+    return header_str
 
 IMAGE_EXT_RE = re.compile(r"(?i)\.(jpe?g|png|gif|bmp|webp|tiff?)$")
 IMAGE_KEYWORDS = {
@@ -79,10 +82,13 @@ def process_file(input_file, mode: str, marketplace: str, mapping_df: pd.DataFra
         "Myntra": {"sheet": None, "header_row": 3, "data_row": 4, "sheet_index": 1},
         "Ajio": {"sheet": None, "header_row": 2, "data_row": 3, "sheet_index": 2},
         "TataCliq": {"sheet": None, "header_row": 4, "data_row": 6, "sheet_index": 0},
-        "General": {"sheet": None, "header_row": 1, "data_row": 2, "sheet_index": 0}
+        "General": {"sheet": None, "header_row": 1, "data_row": 2, "sheet_index": 0},
+        # Celio & Zivame left to 'General' behavior unless you want specific rows
+        "Celio": {"sheet": None, "header_row": 1, "data_row": 2, "sheet_index": 0},
+        "Zivame": {"sheet": None, "header_row": 1, "data_row": 2, "sheet_index": 0},
     }
 
-    config = marketplace_configs[marketplace]
+    config = marketplace_configs.get(marketplace, marketplace_configs["General"])
     
     try:
         if marketplace == "Flipkart":
@@ -214,20 +220,20 @@ def process_file(input_file, mode: str, marketplace: str, mapping_df: pd.DataFra
     for i, v in enumerate(unique_opt2, start=5):
         ws_types.cell(row=i, column=t2_col, value=v)
 
-    # ────────── Flipkart-only: append variantId/productId AT THE VERY END ──────────
-    if marketplace.strip() == "Flipkart":
+    # ────────── Flipkart/Celio/Zivame: append variantId/productId AT THE VERY END ──────────
+    if marketplace.strip() in {"Flipkart", "Celio", "Zivame"}:
         # Exact header matching as requested
         style_code_col  = next((c for c in src_df.columns if str(c).strip() == "Style Code"), None)
         seller_sku_col  = next((c for c in src_df.columns if str(c).strip() == "Seller SKU ID"), None)
 
         if style_code_col is None:
-            st.warning("Flipkart: 'Style Code' column not found in input. 'productId' will be blank.")
+            st.warning(f"{marketplace}: 'Style Code' column not found in input. 'productId' will be blank.")
             product_values = pd.Series([""] * len(src_df), dtype=str)
         else:
             product_values = src_df[style_code_col].fillna("").astype(str)
 
         if seller_sku_col is None:
-            st.warning("Flipkart: 'Seller SKU ID' column not found in input. 'variantId' will be blank.")
+            st.warning(f"{marketplace}: 'Seller SKU ID' column not found in input. 'variantId' will be blank.")
             variant_values = pd.Series([""] * len(src_df), dtype=str)
         else:
             variant_values = src_df[seller_sku_col].fillna("").astype(str)
@@ -278,22 +284,21 @@ if client_names:
 else:
     st.warning("⚠️ No client list found in the mapping workbook.")
 
-# 📝 Add a dropdown for marketplace selection
-marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq"]
+# 📝 Add a dropdown for marketplace selection (added Zivame & Celio)
+marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio"]
 marketplace_type = st.selectbox("Select Template Type", marketplace_options)
 
+# Removed explicit Mapping/Auto-Mapping UI in your earlier request. Keep same behaviour:
 mode = st.selectbox("Select Mode", ["Mapping", "Auto-Mapping"])
 input_file = st.file_uploader("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])
 
-# 📝 The 'if input_file' block now automatically generates the output.
-# The `st.button` is removed to create a one-click process.
+# The 'if input_file' block now automatically generates the output.
 if input_file:
     with st.spinner("Processing…"):
         result = process_file(input_file, mode, marketplace_type, mapping_df if mode == "Mapping" else None)
     
     if result:
         st.success("✅ Output Generated!")
-        # 📝 The download button is shown immediately after processing is complete.
         st.download_button(
             "📥 Download Output",
             data=result,
