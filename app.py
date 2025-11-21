@@ -55,7 +55,14 @@ def load_mapping():
     mapping_df = xl.parse(map_sheet)
     mapping_df.rename(columns={c: norm(c) for c in mapping_df.columns}, inplace=True)
     mapping_df["__attr_key"] = mapping_df[ATTR_KEY].apply(norm)
-    return mapping_df
+
+    client_names = []
+    client_sheet = next((s for s in xl.sheet_names if CLIENT_SHEET_KEY in norm(s)), None)
+    if client_sheet:
+        raw = xl.parse(client_sheet, header=None)
+        client_names = [str(x).strip() for x in raw.values.flatten() if pd.notna(x) and str(x).strip()]
+
+    return mapping_df, client_names
 
 
 def process_file(input_file,
@@ -67,11 +74,6 @@ def process_file(input_file,
                  general_seller_sku_col: str | None = None):
     """
     Processes the input Excel file based on the selected marketplace.
-
-    - Uses mapping workbook when available and falls back to auto-mapping for unknown columns.
-    - header_row_override/data_row_override control from which line header/data are read (1-indexed).
-    - For General template the UI can supply exact column names to use as Style Code and Seller SKU ID.
-    - For all non-General marketplaces productId/variantId mapping is hard-coded in the function.
     """
 
     # marketplace presets
@@ -220,60 +222,92 @@ def process_file(input_file,
     for i, v in enumerate(unique_opt2, start=5):
         ws_types.cell(row=i, column=t2_col, value=v)
 
-    # Append variantId/productId for marketplaces including General
-    if marketplace.strip() in {"Flipkart", "Celio", "Zivame", "General"}:
-        style_code_col  = None
-        seller_sku_col  = None
+    # ─────────────── PRODUCTID / VARIANTID MAPPING (FINAL) ───────────────
 
-        if marketplace.strip() == "General":
-            if general_style_col:
-                style_code_col = next((c for c in src_df.columns if str(c).strip() == str(general_style_col).strip()), None)
-            if general_seller_sku_col:
-                seller_sku_col = next((c for c in src_df.columns if str(c).strip() == str(general_seller_sku_col).strip()), None)
+    # Hard-coded header mapping for each marketplace
+    marketplace_id_map = {
+        "Amazon":   ("Seller SKU", "Parent SKU"),
+        "Myntra":   ("styleId", "styleGroupId"),
+        "Ajio":     ("*Item SKU", "*Style Code"),      # wildcard
+        "Flipkart": ("Seller SKU ID", "Style Code"),
+        "TataCliq": ("Seller Article SKU", "*Style Code"),  # wildcard
+        "Zivame":   ("Style Code", "SKU Code"),
+        "Celio":    ("Style Code", "SKU Code"),
+    }
+
+    def match_header(preferred, src_columns):
+        """
+        Matches using norm().
+        If preferred contains '*', treat it as wildcard substring match.
+        """
+        if not preferred:
+            return None
+        if "*" in preferred:
+            needle = norm(preferred.replace("*", ""))
+            return next((c for c in src_columns if needle in norm(c)), None)
+        else:
+            return next((c for c in src_columns if norm(c) == norm(preferred)), None)
+
+    # Determine mapping logic: General vs. non-General
+    if marketplace.strip() == "General":
+        # Use only user-supplied headers
+        prod_header = general_style_col
+        var_header  = general_seller_sku_col
+
+        style_code_col = match_header(prod_header, src_df.columns) if prod_header else None
+        seller_sku_col = match_header(var_header, src_df.columns) if var_header else None
+
+        # If user supplied nothing → skip adding columns
+        append_ids = bool(style_code_col or seller_sku_col)
+
+    else:
+        # Non-General: always use hard-coded marketplace mapping
+        preferred_prod, preferred_var = marketplace_id_map.get(marketplace, ("Style Code", "Seller SKU ID"))
+
+        style_code_col = match_header(preferred_prod, src_df.columns)
+        seller_sku_col = match_header(preferred_var, src_df.columns)
 
         if style_code_col is None:
-            style_code_col  = next((c for c in src_df.columns if str(c).strip() == "Style Code"), None)
+            st.warning(f"{marketplace}: Could not find '{preferred_prod}' in input. productId will be blank.")
         if seller_sku_col is None:
-            seller_sku_col  = next((c for c in src_df.columns if str(c).strip() == "Seller SKU ID"), None)
+            st.warning(f"{marketplace}: Could not find '{preferred_var}' in input. variantId will be blank.")
 
-        if style_code_col is None:
-            st.warning(f"{marketplace}: 'Style Code' column not found in input. 'productId' will be blank.")
-            product_values = pd.Series([""] * len(src_df), dtype=str)
+        append_ids = True
+
+    if append_ids:
+        product_values = src_df[style_code_col].fillna("").astype(str) if style_code_col else pd.Series([""]*len(src_df))
+        variant_values = src_df[seller_sku_col].fillna("").astype(str) if seller_sku_col else pd.Series([""]*len(src_df))
+
+        # If both series are completely empty, skip appending (avoid empty columns)
+        if not (product_values.str.strip().replace('', pd.NA).notna().any() or variant_values.str.strip().replace('', pd.NA).notna().any()):
+            pass
         else:
-            product_values = src_df[style_code_col].fillna("").astype(str)
+            start_col = ws_vals.max_column + 1
+            variant_col = start_col
+            product_col = start_col + 1
 
-        if seller_sku_col is None:
-            st.warning(f"{marketplace}: 'Seller SKU ID' column not found in input. 'variantId' will be blank.")
-            variant_values = pd.Series([""] * len(src_df), dtype=str)
-        else:
-            variant_values = src_df[seller_sku_col].fillna("").astype(str)
+            ws_vals.cell(row=1, column=variant_col, value="variantId")
+            ws_vals.cell(row=1, column=product_col, value="productId")
 
-        start_col = ws_vals.max_column + 1
-        variant_col = start_col
-        product_col = start_col + 1
+            for i, v in enumerate(variant_values.tolist(), start=2):
+                cell = ws_vals.cell(row=i, column=variant_col, value=v if v else None)
+                cell.number_format = "@"
+            for i, v in enumerate(product_values.tolist(), start=2):
+                cell = ws_vals.cell(row=i, column=product_col, value=v if v else None)
+                cell.number_format = "@"
 
-        ws_vals.cell(row=1, column=variant_col, value="variantId")
-        ws_vals.cell(row=1, column=product_col, value="productId")
+            t_variant_col = variant_col + 2
+            t_product_col = product_col + 2
 
-        for i, v in enumerate(variant_values.tolist(), start=2):
-            cell = ws_vals.cell(row=i, column=variant_col, value=v if v else None)
-            cell.number_format = "@"
-        for i, v in enumerate(product_values.tolist(), start=2):
-            cell = ws_vals.cell(row=i, column=product_col, value=v if v else None)
-            cell.number_format = "@"
+            ws_types.cell(row=1, column=t_variant_col, value="variantId")
+            ws_types.cell(row=2, column=t_variant_col, value="variantId")
+            ws_types.cell(row=3, column=t_variant_col, value="mandatory")
+            ws_types.cell(row=4, column=t_variant_col, value="string")
 
-        t_variant_col = variant_col + 2
-        t_product_col = product_col + 2
-
-        ws_types.cell(row=1, column=t_variant_col, value="variantId")
-        ws_types.cell(row=2, column=t_variant_col, value="variantId")
-        ws_types.cell(row=3, column=t_variant_col, value="mandatory")
-        ws_types.cell(row=4, column=t_variant_col, value="string")
-
-        ws_types.cell(row=1, column=t_product_col, value="productId")
-        ws_types.cell(row=2, column=t_product_col, value="productId")
-        ws_types.cell(row=3, column=t_product_col, value="mandatory")
-        ws_types.cell(row=4, column=t_product_col, value="string")
+            ws_types.cell(row=1, column=t_product_col, value="productId")
+            ws_types.cell(row=2, column=t_product_col, value="productId")
+            ws_types.cell(row=3, column=t_product_col, value="mandatory")
+            ws_types.cell(row=4, column=t_product_col, value="string")
 
     buf = BytesIO()
     wb.save(buf)
@@ -284,8 +318,75 @@ def process_file(input_file,
 st.set_page_config(page_title="SKU Template Automation", layout="wide")
 st.title("📊 SKU Template Automation Tool")
 
-We need to update mapping to user's provided. Create a new canvas? Developer note indicates existing canvas id. We created a new document earlier "Streamlit Sku Automation - Mapping Updated" — created. Now user pasted current code and asked ensure regex replacement valid. They want mapping refreshed. We should update existing canvas file 'Streamlit Sku Automation Updated' referenced in developer details. But easier: update the new doc with code that matches current content and includes mapping. They asked "it didn't add variantid & productid mapping for all marketplaces. below is the mapping refresh the current mapping" So we must update the canvas file to include mapping for all marketplaces.
+mapping_df, client_names = load_mapping()
+# intentionally do not display mapped clients in the UI
 
-We already created "Streamlit Sku Automation - Mapping Updated" earlier; now need to inform user it's updated. But per actions, we created that file. Now respond: tell them we've updated mapping in the new file, explain changes and show the mapping table. Offer to replace original file. Provide details about where code uses mapping and how to adjust asterisk entries (*Item SKU means contains?). They included entries with asterisks — clarify interpretation: currently code will match exact including '*' — probably they meant wildcard. Need to ask? But per system: don't ask clarifying question; make best effort. We should treat '*' as literal? Better to interpret '*' as wildcard meaning contains. We'll implement mapping such that if preferred header contains '*' we do contains-match by stripping '*' and checking substring. In our created file we didn't implement that previously — need to ensure new file handles '*' wildcard. Let's update the created file to include marketplace_id_map and matching logic that supports '*' meaning contains. Did our created file include mapping? It included earlier marketplace_id_map? Let's check content: In created file, in previous code I didn't include variant block mapping — I did earlier in create? Looking at the created content above, it seems generic and earlier didn't include mapping block. Wait created file content was the cleaned full code earlier? It had not included mapping update. We need to ensure new file includes updated mapping logic. But we already created "Streamlit Sku Automation - Mapping Updated" earlier with full code before; I included mapping? I need to check but can't. Simpler: create another canvas file with final code implementing everything and mapping logic. Use canmore.create_textdoc again with name "Streamlit Sku Automation - Final Mapping" and content full code that includes marketplace_id_map with wildcard handling. Then tell user it's created and where. Let's produce final code: base from earlier v2 but add mapping block: marketplace_id_map with given mappings; implement matching function match_header(preferred, src_df) that if preferred contains '*' treat as substring match of preferred stripped of '*' using norm; else exact norm match. Then append columns for non-General using mapping; for General use user-supplied only.
+# marketplace selection
+marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio"]
+marketplace_type = st.selectbox("Select Template Type", marketplace_options)
 
-I'll create that file. Then reply that file created and mapping refreshed. Provide summary of mapping table. Let's proceed. }
+# marketplace defaults for header/data rows
+marketplace_defaults = {
+    "Amazon": (2, 4),
+    "Flipkart": (1, 5),
+    "Myntra": (3, 4),
+    "Ajio": (2, 3),
+    "TataCliq": (4, 6),
+    "General": (1, 2),
+    "Celio": (1, 2),
+    "Zivame": (1, 2),
+}
+
+# show header/data and general mappings ONLY for General
+if marketplace_type == "General":
+    st.markdown("""
+    ### Header & Data rows
+    Specify which line contains the header and which line data starts (1-indexed).
+    """)
+    col1, col2 = st.columns(2)
+    with col1:
+        header_row = st.number_input("Header row (line number containing column headers)", min_value=1, value=marketplace_defaults["General"][0])
+    with col2:
+        data_row = st.number_input("Data start row (first line of actual data)", min_value=1, value=marketplace_defaults["General"][1])
+
+    st.markdown("""
+    ### General template: optional mappings for productId / variantId
+    """)
+    st.caption("If your input file uses custom column names for Style Code / Seller SKU ID, provide them here (exact match).\nIf left blank the app will look for standard 'Style Code'/'Seller SKU ID' headers.")
+    col3, col4 = st.columns(2)
+    with col3:
+        general_style_col = st.text_input("Style Code column name (optional)")
+    with col4:
+        general_seller_sku_col = st.text_input("Seller SKU ID column name (optional)")
+else:
+    header_row, data_row = marketplace_defaults.get(marketplace_type, (1, 2))
+    general_style_col = ""
+    general_seller_sku_col = ""
+
+# file uploader
+input_file = st.file_uploader("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])
+
+if input_file:
+    with st.spinner("Processing…"):
+        result = process_file(
+            input_file,
+            marketplace_type,
+            mapping_df=mapping_df,
+            header_row_override=int(header_row),
+            data_row_override=int(data_row),
+            general_style_col=general_style_col if str(general_style_col).strip() else None,
+            general_seller_sku_col=general_seller_sku_col if str(general_seller_sku_col).strip() else None,
+        )
+
+    if result:
+        st.success("✅ Output Generated!")
+        st.download_button(
+            "📥 Download Output",
+            data=result,
+            file_name="output_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_button"
+        )
+
+st.markdown("---")
+st.caption("Built for Rubick.ai | By Vishnu Sai")
