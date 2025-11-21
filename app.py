@@ -325,24 +325,45 @@ else:
 marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio"]
 marketplace_type = st.selectbox("Select Template Type", marketplace_options)
 
-# Removed explicit Mapping/Auto-Mapping UI - the app now automatically uses mapping workbook when available
-# Provide header & data start inputs (1-indexed). Defaults come from marketplace presets but user can override.
-st.markdown("### Header & Data rows\nSpecify which line contains the header and which line data starts (1-indexed).")
-col1, col2 = st.columns(2)
-with col1:
-    header_row = st.number_input("Header row (line number containing column headers)", min_value=1, value=1)
-with col2:
-    data_row = st.number_input("Data start row (first line of actual data)", min_value=1, value=2)
+# Removed explicit Mapping/Auto-Mapping - the app now automatically uses mapping workbook when available
+# Provide header & data start inputs (1-indexed) ONLY for General template. For other marketplaces we
+# use sensible defaults from marketplace presets (so the UI stays simple).
+marketplace_defaults = {
+    "Amazon": (2, 4),
+    "Flipkart": (1, 5),
+    "Myntra": (3, 4),
+    "Ajio": (2, 3),
+    "TataCliq": (4, 6),
+    "General": (1, 2),
+    "Celio": (1, 2),
+    "Zivame": (1, 2),
+}
 
-# For General template ask for exact column names to map productId/variantId (optional)
-st.markdown("### General template: optional mappings for productId / variantId")
-st.caption("If your input file uses custom column names for Style Code / Seller SKU ID, provide them here (exact match).\nIf left blank the app will look for standard 'Style Code'/'Seller SKU ID' headers.")
-col3, col4 = st.columns(2)
-with col3:
-    general_style_col = st.text_input("Style Code column name (optional)")
-with col4:
-    general_seller_sku_col = st.text_input("Seller SKU ID column name (optional)")
+# If user selects General, show the extra controls to override header/data rows and
+# optionally supply Style Code / Seller SKU column names. Otherwise keep defaults.
+if marketplace_type == "General":
+    st.markdown("### Header & Data rows\nSpecify which line contains the header and which line data starts (1-indexed).")
+    col1, col2 = st.columns(2)
+    with col1:
+        header_row = st.number_input("Header row (line number containing column headers)", min_value=1, value=marketplace_defaults["General"][0])
+    with col2:
+        data_row = st.number_input("Data start row (first line of actual data)", min_value=1, value=marketplace_defaults["General"][1])
 
+    # For General template ask for exact column names to map productId/variantId (optional)
+    st.markdown("### General template: optional mappings for productId / variantId")
+    st.caption("If your input file uses custom column names for Style Code / Seller SKU ID, provide them here (exact match).\nIf left blank the app will look for standard 'Style Code'/'Seller SKU ID' headers.")
+    col3, col4 = st.columns(2)
+    with col3:
+        general_style_col = st.text_input("Style Code column name (optional)")
+    with col4:
+        general_seller_sku_col = st.text_input("Seller SKU ID column name (optional)")
+else:
+    # Use marketplace defaults and leave general mappings empty
+    header_row, data_row = marketplace_defaults.get(marketplace_type, (1, 2))
+    general_style_col = ""
+    general_seller_sku_col = ""
+
+# File uploader (always visible)
 input_file = st.file_uploader("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])
 
 # The 'if input_file' block now automatically generates the output using mapping workbook when available.
