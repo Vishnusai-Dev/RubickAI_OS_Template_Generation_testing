@@ -316,10 +316,7 @@ st.set_page_config(page_title="SKU Template Automation", layout="wide")
 st.title("📊 SKU Template Automation Tool")
 
 mapping_df, client_names = load_mapping()
-if client_names:
-    st.info("🗂️ **Mapped clients available:** " + ", ".join(client_names))
-else:
-    st.warning("⚠️ No client list found in the mapping workbook.")
+# Removed display of mapped clients (Celio, Zivame, etc.)("⚠️ No client list found in the mapping workbook.")
 
 # 📝 Add a dropdown for marketplace selection (added Zivame & Celio)
 marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio"]
@@ -342,7 +339,8 @@ marketplace_defaults = {
 # If user selects General, show the extra controls to override header/data rows and
 # optionally supply Style Code / Seller SKU column names. Otherwise keep defaults.
 if marketplace_type == "General":
-    st.markdown("### Header & Data rows\nSpecify which line contains the header and which line data starts (1-indexed).")
+    st.markdown("### Header & Data rows
+Specify which line contains the header and which line data starts (1-indexed).")
     col1, col2 = st.columns(2)
     with col1:
         header_row = st.number_input("Header row (line number containing column headers)", min_value=1, value=marketplace_defaults["General"][0])
@@ -351,7 +349,8 @@ if marketplace_type == "General":
 
     # For General template ask for exact column names to map productId/variantId (optional)
     st.markdown("### General template: optional mappings for productId / variantId")
-    st.caption("If your input file uses custom column names for Style Code / Seller SKU ID, provide them here (exact match).\nIf left blank the app will look for standard 'Style Code'/'Seller SKU ID' headers.")
+    st.caption("If your input file uses custom column names for Style Code / Seller SKU ID, provide them here (exact match).
+If left blank the app will look for standard 'Style Code'/'Seller SKU ID' headers.")
     col3, col4 = st.columns(2)
     with col3:
         general_style_col = st.text_input("Style Code column name (optional)")
