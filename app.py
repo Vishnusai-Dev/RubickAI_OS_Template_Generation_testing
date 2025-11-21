@@ -70,11 +70,26 @@ def load_mapping():
 
     return mapping_df, client_names
 
-def process_file(input_file, mode: str, marketplace: str, mapping_df: pd.DataFrame | None = None):
+
+def process_file(input_file,
+                 marketplace: str,
+                 mapping_df: pd.DataFrame | None = None,
+                 header_row_override: int | None = None,
+                 data_row_override: int | None = None,
+                 general_style_col: str | None = None,
+                 general_seller_sku_col: str | None = None):
     """
     Processes the input Excel file based on the selected marketplace.
+
+    - Removed explicit Mapping/Auto-Mapping switch: the function will try to use the mapping
+      workbook if available (mapping_df not None) and falls back to auto-mapping when no
+      mapping is found for a column.
+    - header_row_override/data_row_override allow the UI to control from which line the
+      header is read and from which line data starts (1-indexed).
+    - For General template the UI can supply exact column names to use as Style Code
+      and Seller SKU ID for generating productId/variantId.
     """
-    
+
     # 📝 Define marketplace-specific sheet, header, and data row configurations
     marketplace_configs = {
         "Amazon": {"sheet": "Template", "header_row": 2, "data_row": 4, "sheet_index": None},
@@ -83,39 +98,42 @@ def process_file(input_file, mode: str, marketplace: str, mapping_df: pd.DataFra
         "Ajio": {"sheet": None, "header_row": 2, "data_row": 3, "sheet_index": 2},
         "TataCliq": {"sheet": None, "header_row": 4, "data_row": 6, "sheet_index": 0},
         "General": {"sheet": None, "header_row": 1, "data_row": 2, "sheet_index": 0},
-        # Celio & Zivame left to 'General' behavior unless you want specific rows
         "Celio": {"sheet": None, "header_row": 1, "data_row": 2, "sheet_index": 0},
         "Zivame": {"sheet": None, "header_row": 1, "data_row": 2, "sheet_index": 0},
     }
 
     config = marketplace_configs.get(marketplace, marketplace_configs["General"])
-    
+
+    # Apply overrides if provided (UI supplies these for General or custom flows)
+    header_row = header_row_override if header_row_override is not None else config["header_row"]
+    data_row = data_row_override if data_row_override is not None else config["data_row"]
+
     try:
         if marketplace == "Flipkart":
             xl = pd.ExcelFile(input_file)
             temp_df = xl.parse(xl.sheet_names[config["sheet_index"]], header=None)
-            header_row = config["header_row"] - 1 
-            data_start_row = config["data_row"] - 1
+            header_idx = header_row - 1
+            data_start_idx = data_row - 1
 
-            headers = temp_df.iloc[header_row].tolist()
-            src_df = temp_df.iloc[data_start_row:].copy()
+            headers = temp_df.iloc[header_idx].tolist()
+            src_df = temp_df.iloc[data_start_idx:].copy()
             src_df.columns = headers
-            
+
         elif config["sheet"] is not None:
             src_df = pd.read_excel(
                 input_file,
                 sheet_name=config["sheet"],
-                header=config["header_row"] - 1,
-                skiprows=config["data_row"] - config["header_row"] - 1
+                header=header_row - 1,
+                skiprows=data_row - header_row - 1
             )
         else:
             xl = pd.ExcelFile(input_file)
             src_df = xl.parse(
                 xl.sheet_names[config["sheet_index"]],
-                header=config["header_row"] - 1,
-                skiprows=config["data_row"] - config["header_row"] - 1
+                header=header_row - 1,
+                skiprows=data_row - header_row - 1
             )
-            
+
     except Exception as e:
         st.error(f"Error reading file for {marketplace} template: {e}")
         return None
@@ -125,8 +143,12 @@ def process_file(input_file, mode: str, marketplace: str, mapping_df: pd.DataFra
 
     columns_meta = []
 
+    # Determine whether to use mapping: if mapping_df is provided we prefer it, otherwise auto-map
+    use_mapping = mapping_df is not None
+
     # ────────── BUILD columns_meta ──────────
-    if mode == "Mapping" and mapping_df is not None:
+    if use_mapping:
+        # mapping keys are normalized in load_mapping
         for col in src_df.columns:
             col_key = norm(col)
             matches = mapping_df[mapping_df["__attr_key"] == col_key]
@@ -134,7 +156,9 @@ def process_file(input_file, mode: str, marketplace: str, mapping_df: pd.DataFra
                 row3 = matches.iloc[0][MAND_KEY]
                 row4 = matches.iloc[0][TYPE_KEY]
             else:
-                row3 = row4 = "Not Found"
+                # fallback to auto-type when column not found in mapping
+                row3 = "mandatory"
+                row4 = "imageurlarray" if is_image_column(norm(col), src_df[col]) else "string"
             columns_meta.append({"src": col, "out": col, "row3": row3, "row4": row4})
             for _, row in matches.iterrows():
                 if str(row[DUP_KEY]).lower().startswith("yes"):
@@ -150,14 +174,14 @@ def process_file(input_file, mode: str, marketplace: str, mapping_df: pd.DataFra
         for col in src_df.columns:
             dtype = "imageurlarray" if is_image_column(norm(col), src_df[col]) else "string"
             columns_meta.append({"src": col, "out": col, "row3": "mandatory", "row4": dtype})
-    
+
     # ────────── Identify and Extract Color & Size Columns ──────────
     color_cols = [col for col in src_df.columns if "color" in norm(col) or "colour" in norm(col)]
     size_cols  = [col for col in src_df.columns if "size"  in norm(col)]
-    
+
     option1_data = pd.Series([""] * len(src_df), dtype=str)
     option2_data = pd.Series([""] * len(src_df), dtype=str)
-    
+
     if size_cols:
         option1_data = src_df[size_cols[0]].fillna('').astype(str).str.strip()
         if color_cols and color_cols[0] != size_cols[0]:
@@ -169,7 +193,7 @@ def process_file(input_file, mode: str, marketplace: str, mapping_df: pd.DataFra
     wb = openpyxl.load_workbook(TEMPLATE_PATH)
     ws_vals = wb["Values"]
     ws_types = wb["Types"]
-    
+
     # Write main mapped/auto-mapped columns to Values and Types
     for j, meta in enumerate(columns_meta, start=1):
         header_display = clean_header(meta["out"])
@@ -199,7 +223,7 @@ def process_file(input_file, mode: str, marketplace: str, mapping_df: pd.DataFra
         ws_vals.cell(row=i, column=opt1_col, value=v if v else None)
     for i, v in enumerate(option2_data.tolist(), start=2):
         ws_vals.cell(row=i, column=opt2_col, value=v if v else None)
-    
+
     # ────────── APPEND OPTION 1 & OPTION 2 TO TYPES ──────────
     t1_col = opt1_col + 2
     t2_col = opt2_col + 2
@@ -211,7 +235,7 @@ def process_file(input_file, mode: str, marketplace: str, mapping_df: pd.DataFra
     ws_types.cell(row=2, column=t2_col, value="Option 2")
     ws_types.cell(row=3, column=t2_col, value="non mandatory")
     ws_types.cell(row=4, column=t2_col, value="select")
-    
+
     # Get unique values to add to the 'Types' sheet for validation
     unique_opt1 = option1_data.dropna().unique().tolist()
     unique_opt2 = option2_data.dropna().unique().tolist()
@@ -221,10 +245,23 @@ def process_file(input_file, mode: str, marketplace: str, mapping_df: pd.DataFra
         ws_types.cell(row=i, column=t2_col, value=v)
 
     # ────────── Flipkart/Celio/Zivame: append variantId/productId AT THE VERY END ──────────
-    if marketplace.strip() in {"Flipkart", "Celio", "Zivame"}:
-        # Exact header matching as requested
-        style_code_col  = next((c for c in src_df.columns if str(c).strip() == "Style Code"), None)
-        seller_sku_col  = next((c for c in src_df.columns if str(c).strip() == "Seller SKU ID"), None)
+    # For General template, user can supply column names to use for productId/variantId as well
+    if marketplace.strip() in {"Flipkart", "Celio", "Zivame", "General"}:
+        style_code_col  = None
+        seller_sku_col  = None
+
+        # Prefer exact column names supplied for General template
+        if marketplace.strip() == "General":
+            if general_style_col:
+                style_code_col = next((c for c in src_df.columns if str(c).strip() == str(general_style_col).strip()), None)
+            if general_seller_sku_col:
+                seller_sku_col = next((c for c in src_df.columns if str(c).strip() == str(general_seller_sku_col).strip()), None)
+
+        # Fallback detection for other marketplaces: exact header match as before
+        if style_code_col is None:
+            style_code_col  = next((c for c in src_df.columns if str(c).strip() == "Style Code"), None)
+        if seller_sku_col is None:
+            seller_sku_col  = next((c for c in src_df.columns if str(c).strip() == "Seller SKU ID"), None)
 
         if style_code_col is None:
             st.warning(f"{marketplace}: 'Style Code' column not found in input. 'productId' will be blank.")
@@ -288,15 +325,39 @@ else:
 marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio"]
 marketplace_type = st.selectbox("Select Template Type", marketplace_options)
 
-# Removed explicit Mapping/Auto-Mapping UI in your earlier request. Keep same behaviour:
-mode = st.selectbox("Select Mode", ["Mapping", "Auto-Mapping"])
+# Removed explicit Mapping/Auto-Mapping UI - the app now automatically uses mapping workbook when available
+# Provide header & data start inputs (1-indexed). Defaults come from marketplace presets but user can override.
+st.markdown("### Header & Data rows\nSpecify which line contains the header and which line data starts (1-indexed).")
+col1, col2 = st.columns(2)
+with col1:
+    header_row = st.number_input("Header row (line number containing column headers)", min_value=1, value=1)
+with col2:
+    data_row = st.number_input("Data start row (first line of actual data)", min_value=1, value=2)
+
+# For General template ask for exact column names to map productId/variantId (optional)
+st.markdown("### General template: optional mappings for productId / variantId")
+st.caption("If your input file uses custom column names for Style Code / Seller SKU ID, provide them here (exact match).\nIf left blank the app will look for standard 'Style Code'/'Seller SKU ID' headers.")
+col3, col4 = st.columns(2)
+with col3:
+    general_style_col = st.text_input("Style Code column name (optional)")
+with col4:
+    general_seller_sku_col = st.text_input("Seller SKU ID column name (optional)")
+
 input_file = st.file_uploader("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])
 
-# The 'if input_file' block now automatically generates the output.
+# The 'if input_file' block now automatically generates the output using mapping workbook when available.
 if input_file:
     with st.spinner("Processing…"):
-        result = process_file(input_file, mode, marketplace_type, mapping_df if mode == "Mapping" else None)
-    
+        result = process_file(
+            input_file,
+            marketplace_type,
+            mapping_df=mapping_df,
+            header_row_override=int(header_row),
+            data_row_override=int(data_row),
+            general_style_col=general_style_col if general_style_col.strip() else None,
+            general_seller_sku_col=general_seller_sku_col if general_seller_sku_col.strip() else None,
+        )
+
     if result:
         st.success("✅ Output Generated!")
         st.download_button(
@@ -304,8 +365,8 @@ if input_file:
             data=result,
             file_name="output_template.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_button" # Unique key to prevent re-runs
+            key="download_button"
         )
-    
+
 st.markdown("---")
 st.caption("Built for Rubick.ai | By Vishnu Sai")
