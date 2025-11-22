@@ -22,10 +22,7 @@ def clean_header(header) -> str:
     return header_str
 
 IMAGE_EXT_RE = re.compile(r"(?i)\.(jpe?g|png|gif|bmp|webp|tiff?)$")
-IMAGE_KEYWORDS = {
-    "image", "img", "picture", "photo", "thumbnail", "thumb",
-    "hero", "front", "back", "url"
-}
+IMAGE_KEYWORDS = {"image", "img", "picture", "photo", "thumbnail", "thumb", "hero", "front", "back", "url"}
 
 def is_image_column(col_header_norm: str, series: pd.Series) -> bool:
     header_hit = any(k in col_header_norm for k in IMAGE_KEYWORDS)
@@ -45,6 +42,7 @@ MARKETPLACE_ID_MAP = {
     "Celio": ("Style Code", "SKU Code"),
 }
 
+
 def find_column_by_name_like(src_df: pd.DataFrame, name: str):
     if not name:
         return None
@@ -61,11 +59,8 @@ def find_column_by_name_like(src_df: pd.DataFrame, name: str):
             return c
     return None
 
+
 def read_input_to_df(input_file, marketplace, header_row=1, data_row=2):
-    """
-    Read uploaded excel into a dataframe using marketplace config or supplied header/data rows (1-indexed).
-    Returns dataframe or raises exception.
-    """
     marketplace_configs = {
         "Amazon": {"sheet": "Template", "header_row": 2, "data_row": 4, "sheet_index": None},
         "Flipkart": {"sheet": None, "header_row": 1, "data_row": 5, "sheet_index": 2},
@@ -101,6 +96,7 @@ def read_input_to_df(input_file, marketplace, header_row=1, data_row=2):
     src_df.dropna(axis=1, how='all', inplace=True)
     return src_df
 
+
 def process_file(
     input_file,
     marketplace: str,
@@ -109,10 +105,7 @@ def process_file(
     general_header_row: int = 1,
     general_data_row: int = 2,
 ):
-    """
-    Pure auto-mapping processing. Accepts optional selected column names for variant/product (or None).
-    """
-    # read src_df using appropriate header/data rows for General
+    # read src_df using header/data rows for General
     src_df = read_input_to_df(input_file, marketplace, header_row=general_header_row, data_row=general_data_row)
 
     # auto-map every column
@@ -218,25 +211,33 @@ def process_file(
             ws_types.cell(row=3, column=t_p_col, value="mandatory")
             ws_types.cell(row=4, column=t_p_col, value="string")
 
-    # read src_df again to get selected columns (could have been read earlier)
-    src_df = read_input_to_df(input_file, marketplace, header_row=general_header_row, data_row=general_data_row)
-
-    # build series for chosen columns
-    variant_series = None
-    product_series = None
-    if selected_variant_col and selected_variant_col != "(none)":
-        if selected_variant_col in src_df.columns:
-            variant_series = src_df[selected_variant_col].fillna("").astype(str)
-    if selected_product_col and selected_product_col != "(none)":
-        if selected_product_col in src_df.columns:
-            product_series = src_df[selected_product_col].fillna("").astype(str)
-
-    append_id_columns(variant_series, product_series)
+    # General marketplace: UI-driven column selection already occurred in the app; here we just append if series provided
+    if marketplace == "General":
+        variant_series = None
+        product_series = None
+        if selected_variant_col and selected_variant_col != "(none)":
+            if selected_variant_col in src_df.columns:
+                variant_series = src_df[selected_variant_col].fillna("").astype(str)
+        if selected_product_col and selected_product_col != "(none)":
+            if selected_product_col in src_df.columns:
+                product_series = src_df[selected_product_col].fillna("").astype(str)
+        append_id_columns(variant_series, product_series)
+    else:
+        # other marketplaces: auto-find based on MARKETPLACE_ID_MAP and append if found
+        mapping = MARKETPLACE_ID_MAP.get(marketplace, None)
+        if mapping:
+            prod_src_name, var_src_name = mapping
+            prod_col = find_column_by_name_like(src_df, prod_src_name)
+            var_col = find_column_by_name_like(src_df, var_src_name)
+            prod_series = src_df[prod_col].fillna("").astype(str) if prod_col else None
+            var_series = src_df[var_col].fillna("").astype(str) if var_col else None
+            append_id_columns(var_series, prod_series)
 
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)
     return buf
+
 
 # ───────────────────────── STREAMLIT UI ─────────────────────────
 st.set_page_config(page_title="SKU Template Automation", layout="wide")
@@ -245,7 +246,7 @@ st.title("📊 SKU Template Automation Tool")
 marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio"]
 marketplace_type = st.selectbox("Select Template Type", marketplace_options)
 
-# General header/data inputs (number inputs are safer)
+# General header/data inputs (number inputs)
 general_header_row = 1
 general_data_row = 2
 if marketplace_type == "General":
@@ -256,12 +257,10 @@ if marketplace_type == "General":
 
 input_file = st.file_uploader("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])
 
-# placeholders for dropdowns
 selected_variant_col = "(none)"
 selected_product_col = "(none)"
 
 if input_file:
-    # parse the file to get detected headers (based on chosen marketplace and general header/data rows)
     try:
         src_df = read_input_to_df(input_file, marketplace_type, header_row=general_header_row, data_row=general_data_row)
     except Exception as e:
@@ -269,51 +268,56 @@ if input_file:
         src_df = None
 
     if src_df is not None:
-        st.subheader("Detected headers (first 8 shown)")
-        st.write(list(src_df.columns)[:8])
+        # Show the header row values and first 3 data rows directly for General only
+        if marketplace_type == "General":
+            st.markdown("**Detected header row values**")
+            header_row_vals = list(src_df.columns)
+            st.write(header_row_vals)
+            st.markdown("**Sample data (first 3 rows)**")
+            st.dataframe(src_df.head(3))
 
-        # Build dropdown options
-        cols = ["(none)"] + [str(c) for c in src_df.columns]
-
-        # For non-General marketplaces, try to pre-select best matches from MARKETPLACE_ID_MAP
-        pre_sel_var = "(none)"
-        pre_sel_prod = "(none)"
-        if marketplace_type != "General":
-            mapping = MARKETPLACE_ID_MAP.get(marketplace_type)
-            if mapping:
-                prod_src_name, var_src_name = mapping
-                found_prod = find_column_by_name_like(src_df, prod_src_name)
-                found_var = find_column_by_name_like(src_df, var_src_name)
-                pre_sel_prod = found_prod if found_prod is not None else "(none)"
-                pre_sel_var = found_var if found_var is not None else "(none)"
-
-        st.markdown("### Select columns to populate IDs (optional)")
-        col1, col2 = st.columns(2)
-        with col1:
-            if marketplace_type == "General":
+            # Build dropdowns from detected headers for selecting Style / Seller columns
+            cols = ["(none)"] + [str(c) for c in src_df.columns]
+            col1, col2 = st.columns(2)
+            with col1:
                 selected_variant_col = st.selectbox("Style Code → variantId (leave '(none)' to skip)", options=cols, index=0)
-            else:
-                # pre-select detected match if available
-                default_idx = cols.index(pre_sel_var) if pre_sel_var in cols else 0
-                selected_variant_col = st.selectbox("Variant source column (pre-detected)", options=cols, index=default_idx)
-        with col2:
-            if marketplace_type == "General":
+            with col2:
                 selected_product_col = st.selectbox("Seller SKU → productId (leave '(none)' to skip)", options=cols, index=0)
-            else:
-                default_idx = cols.index(pre_sel_prod) if pre_sel_prod in cols else 0
-                selected_product_col = st.selectbox("Product source column (pre-detected)", options=cols, index=default_idx)
+
+        else:
+            # Non-General: don't show any header/data UI, but display a small preview
+            st.subheader("Preview (first 5 rows)")
+            st.dataframe(src_df.head(5))
 
         st.markdown("---")
-        st.write("Preview (first 5 rows):")
-        st.dataframe(src_df.head(5))
-
-        if st.button("Generate Output"):
+        if marketplace_type == "General":
+            if st.button("Generate Output"):
+                with st.spinner("Processing…"):
+                    result = process_file(
+                        input_file,
+                        marketplace_type,
+                        selected_variant_col=selected_variant_col,
+                        selected_product_col=selected_product_col,
+                        general_header_row=general_header_row,
+                        general_data_row=general_data_row,
+                    )
+                if result:
+                    st.success("✅ Output Generated!")
+                    st.download_button(
+                        "📥 Download Output",
+                        data=result,
+                        file_name="output_template.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_button"
+                    )
+        else:
+            # auto-run for non-General
             with st.spinner("Processing…"):
                 result = process_file(
                     input_file,
                     marketplace_type,
-                    selected_variant_col=selected_variant_col,
-                    selected_product_col=selected_product_col,
+                    selected_variant_col=None,
+                    selected_product_col=None,
                     general_header_row=general_header_row,
                     general_data_row=general_data_row,
                 )
@@ -327,8 +331,7 @@ if input_file:
                     key="download_button"
                 )
 else:
-    st.info("Upload a file to enable header-detection and column selection dropdowns.")
+    st.info("Upload a file to enable header-detection and column selection dropdowns (General only).")
 
 st.markdown("---")
 st.caption("Built for Rubick.ai | By Vishnu Sai")
-
