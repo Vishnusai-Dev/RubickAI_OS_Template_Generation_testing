@@ -251,11 +251,9 @@ general_header_row = 1
 general_data_row = 2
 if marketplace_type == "General":
     st.info("Callout: If header/data rows are left as default we will assume Header row = 1 and Data row = 2.")
-    # Show header/data row inputs directly (expanded by default)
-        st.number_input("Header row (1-indexed)", min_value=1, value=1, step=1, key="general_header")
-        general_header_row = st.session_state.get("general_header", 1)
-        st.number_input("Data row (1-indexed)", min_value=1, value=2, step=1, key="general_data")
-        general_data_row = st.session_state.get("general_data", 2)
+    # Show header/data row inputs directly (no expander)
+        general_header_row = st.number_input("Header row (1-indexed)", min_value=1, value=1, step=1)
+        general_data_row = st.number_input("Data row (1-indexed)", min_value=1, value=2, step=1)("general_data", 2)
 
 input_file = st.file_uploader("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])
 
