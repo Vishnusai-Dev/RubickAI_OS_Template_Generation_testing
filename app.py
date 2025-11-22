@@ -251,7 +251,7 @@ def process_file(
 # ───────────────────────── STREAMLIT UI ─────────────────────────
 st.set_page_config(page_title="SKU Template Automation", layout="wide")
 # Title only (logo removed)
-st.title("Rubick OS Template Conversion")("Rubick OS Template Conversion")
+st.title("Rubick OS Template Conversion")
 
 marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio"]
 marketplace_type = st.selectbox("Select Template Type", marketplace_options)
