@@ -60,7 +60,11 @@ def find_column_by_name_like(src_df: pd.DataFrame, name: str):
     return None
 
 
-def read_input_to_df(input_file, marketplace, header_row=1, data_row=2):
+def read_input_to_df(input_file, marketplace, header_row=1, data_row=2, sheet_name=None):
+    """
+    Read uploaded excel into a dataframe using marketplace config or supplied header/data rows (1-indexed).
+    If `sheet_name` is provided for General, parse that sheet directly. Returns dataframe or raises exception.
+    """
     marketplace_configs = {
         "Amazon": {"sheet": "Template", "header_row": 2, "data_row": 4, "sheet_index": None},
         "Flipkart": {"sheet": None, "header_row": 1, "data_row": 5, "sheet_index": 2},
@@ -71,7 +75,11 @@ def read_input_to_df(input_file, marketplace, header_row=1, data_row=2):
     }
     config = marketplace_configs.get(marketplace, marketplace_configs["General"])
 
-    if marketplace == "Flipkart":
+    # If user supplied an explicit sheet_name for General, prefer that
+    if marketplace == "General" and sheet_name:
+        xl = pd.ExcelFile(input_file)
+        src_df = xl.parse(sheet_name, header=header_row - 1, skiprows=data_row - header_row - 1)
+    elif marketplace == "Flipkart":
         xl = pd.ExcelFile(input_file)
         temp_df = xl.parse(xl.sheet_names[config["sheet_index"]], header=None)
         header_idx = config["header_row"] - 1
@@ -104,9 +112,10 @@ def process_file(
     selected_product_col: str | None = None,
     general_header_row: int = 1,
     general_data_row: int = 2,
+    general_sheet_name: str | None = None,
 ):
     # read src_df using header/data rows for General
-    src_df = read_input_to_df(input_file, marketplace, header_row=general_header_row, data_row=general_data_row)
+    src_df = read_input_to_df(input_file, marketplace, header_row=general_header_row, data_row=general_data_row, sheet_name=general_sheet_name)
 
     # auto-map every column
     columns_meta = []
@@ -241,7 +250,9 @@ def process_file(
 
 # ───────────────────────── STREAMLIT UI ─────────────────────────
 st.set_page_config(page_title="SKU Template Automation", layout="wide")
-st.title("📊 SKU Template Automation Tool")
+# Company logo and new title
+st.image("/mnt/data/5052823d-6300-4e4a-a016-fbc1a78c1c29.png", width=200)
+st.title("Rubick OS Template Conversion")
 
 marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio"]
 marketplace_type = st.selectbox("Select Template Type", marketplace_options)
@@ -261,8 +272,20 @@ selected_variant_col = "(none)"
 selected_product_col = "(none)"
 
 if input_file:
+    # For General, ask user to choose the sheet to read from and reuse it for all operations
+    selected_sheet = None
+    if marketplace_type == "General":
+        try:
+            xl = pd.ExcelFile(input_file)
+            sheets = xl.sheet_names
+            selected_sheet = st.selectbox("Select sheet", sheets)
+        except Exception as e:
+            st.error(f"Failed to read sheets from uploaded file: {e}")
+            selected_sheet = None
+
     try:
-        src_df = read_input_to_df(input_file, marketplace_type, header_row=general_header_row, data_row=general_data_row)
+        # Parse the file using the selected sheet for General (if any)
+        src_df = read_input_to_df(input_file, marketplace_type, header_row=general_header_row, data_row=general_data_row, sheet_name=selected_sheet)
     except Exception as e:
         st.error(f"Failed to parse uploaded file: {e}")
         src_df = None
@@ -298,6 +321,7 @@ if input_file:
                         selected_product_col=selected_product_col,
                         general_header_row=general_header_row,
                         general_data_row=general_data_row,
+                        general_sheet_name=selected_sheet,
                     )
                 if result:
                     st.success("✅ Output Generated!")
@@ -318,6 +342,7 @@ if input_file:
                     selected_product_col=None,
                     general_header_row=general_header_row,
                     general_data_row=general_data_row,
+                    general_sheet_name=None,
                 )
             if result:
                 st.success("✅ Output Generated!")
