@@ -260,7 +260,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-st.markdown("<h1 style='text-align:center;'>Rubick OS Template Conversion</h1>", unsafe_allow_html=True)", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align:center;'>Rubick OS Template Conversion</h1>", unsafe_allow_html=True), unsafe_allow_html=True)
 
 marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio"]
 marketplace_type = st.selectbox("Select Template Type", marketplace_options)
