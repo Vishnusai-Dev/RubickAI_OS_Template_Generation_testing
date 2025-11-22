@@ -251,17 +251,16 @@ def process_file(
 # ───────────────────────── STREAMLIT UI ─────────────────────────
 st.set_page_config(page_title="SKU Template Automation", layout="wide")
 # Title only (logo removed)
-# --- Centered Logo and Title ---
-import base64
-logo_path = "/mnt/data/rubick Logo transparent (2).png"
-with open(logo_path, "rb") as f:
-    encoded = base64.b64encode(f.read()).decode()
+# --- Centered Base64 Logo and Title ---
+LOGO_BASE64 = " + data + "
+
 st.markdown(f"""
 <div style='text-align:center;'>
-    <img src='data:image/png;base64,{encoded}' width='240'/>
+    <img src='data:image/png;base64,{LOGO_BASE64}' width='240'/>
 </div>
 """, unsafe_allow_html=True)
-st.markdown("<h1 style='text-align:center;'>Rubick OS Template Conversion</h1>", unsafe_allow_html=True)
+
+st.markdown("<h1 style='text-align:center;'>Rubick OS Template Conversion</h1>", unsafe_allow_html=True)", unsafe_allow_html=True)
 
 marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio"]
 marketplace_type = st.selectbox("Select Template Type", marketplace_options)
