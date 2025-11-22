@@ -271,7 +271,7 @@ if input_file:
         # Show the header row values and first 3 data rows directly for General only
         if marketplace_type == "General":
             # Removed detected header row values display
-            st.markdown("**Sample data (first 3 rows)**"))
+            st.markdown("**Sample data (first 3 rows)**")
             st.dataframe(src_df.head(3))
 
             # Build dropdowns from detected headers for selecting Style / Seller columns
