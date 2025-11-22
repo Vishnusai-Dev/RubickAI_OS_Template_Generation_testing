@@ -255,7 +255,7 @@ if marketplace_type == "General":
     general_header_row = st.number_input("Header row (1-indexed)", min_value=1, value=1, step=1)
     general_data_row = st.number_input("Data row (1-indexed)", min_value=1, value=2, step=1)
 
-input_file = st.file_uploader("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])
+input_file = st.file_uploader("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])
 
 selected_variant_col = "(none)"
 selected_product_col = "(none)"
