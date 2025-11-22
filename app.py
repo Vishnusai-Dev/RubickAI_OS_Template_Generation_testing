@@ -252,9 +252,7 @@ def process_file(
 st.set_page_config(page_title="SKU Template Automation", layout="wide")
 # Title only (logo removed)
 # --- Centered Base64 Logo and Title ---
-LOGO_BASE64 = " + data + "
-
-st.markdown(f"""
+LOGO_BASE64 = """" + encoded + """"
 <div style='text-align:center;'>
     <img src='data:image/png;base64,{LOGO_BASE64}' width='240'/>
 </div>
