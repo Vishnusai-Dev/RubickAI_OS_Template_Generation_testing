@@ -4,18 +4,22 @@ import openpyxl
 import re
 from io import BytesIO
 
-# ---------------- CONFIG ----------------
+# ───────────────────────── FILE PATHS ─────────────────────────
 TEMPLATE_PATH = "sku-template (4).xlsx"
 MAPPING_PATH = "Mapping - Automation.xlsx"
 
-# internal keys
+# ─────────────────── INTERNAL COLUMN KEYS ───────────────────
 ATTR_KEY = "attributes"
 TARGET_KEY = "fieldname"
 MAND_KEY = "mandatoryornot"
 TYPE_KEY = "fieldtype"
 DUP_KEY = "duplicatestobecreated"
 
-# helpers
+# substrings used to find worksheets
+MAPPING_SHEET_KEY = "mapping"
+# ──────────────────────────────────────────────────────────────
+
+# ╭───────────────── NORMALISERS & HELPERS ─────────────────╮
 def norm(s) -> str:
     if pd.isna(s):
         return ""
@@ -24,30 +28,34 @@ def norm(s) -> str:
 def clean_header(header) -> str:
     if pd.isna(header):
         return ""
-    header_str = str(header).replace('.', ' ')
+    header_str = str(header)
+    header_str = header_str.replace(".", " ")
     header_str = re.sub(r"[^A-Za-z0-9\s]", "", header_str)
     header_str = re.sub(r"\s+", " ", header_str).strip()
     return header_str
 
 IMAGE_EXT_RE = re.compile(r"(?i)\.(jpe?g|png|gif|bmp|webp|tiff?)$")
-IMAGE_KEYWORDS = {"image","img","picture","photo","thumbnail","thumb","hero","front","back","url"}
+IMAGE_KEYWORDS = {
+    "image", "img", "picture", "photo", "thumbnail", "thumb",
+    "hero", "front", "back", "url"
+}
 
 def is_image_column(col_header_norm: str, series: pd.Series) -> bool:
     header_hit = any(k in col_header_norm for k in IMAGE_KEYWORDS)
     sample = series.dropna().astype(str).head(20)
     ratio = sample.str.contains(IMAGE_EXT_RE).mean() if not sample.empty else 0.0
     return header_hit or ratio >= 0.30
+# ╰───────────────────────────────────────────────────────────╯
 
 @st.cache_data
 def load_mapping():
     xl = pd.ExcelFile(MAPPING_PATH)
-    sheet = next((s for s in xl.sheet_names if "mapping" in norm(s)), xl.sheet_names[0])
-    df = xl.parse(sheet)
-    df.rename(columns={c: norm(c) for c in df.columns}, inplace=True)
-    df["__attr_key"] = df[ATTR_KEY].apply(norm)
-    return df
+    map_sheet = next((s for s in xl.sheet_names if MAPPING_SHEET_KEY in norm(s)), xl.sheet_names[0])
+    mapping_df = xl.parse(map_sheet)
+    mapping_df.rename(columns={c: norm(c) for c in mapping_df.columns}, inplace=True)
+    mapping_df["__attr_key"] = mapping_df[ATTR_KEY].apply(norm)
+    return mapping_df
 
-# processor
 def process_file(input_file,
                  marketplace: str,
                  mapping_df: pd.DataFrame | None = None,
@@ -55,7 +63,15 @@ def process_file(input_file,
                  data_row_override: int | None = None,
                  general_style_col: str | None = None,
                  general_seller_sku_col: str | None = None):
+    """
+    Processes the input Excel file based on the selected marketplace.
 
+    - Always uses mapping_df when available per-attribute; falls back to auto-mapping for a column if no mapping exists.
+    - Does NOT auto-create 'variantId' or 'SKU Code' columns.
+    - For General: accepts header/data row overrides and optional exact column names to include (but will not auto-generate variant/SKU columns).
+    """
+
+    # Marketplace presets
     marketplace_configs = {
         "Amazon": {"sheet": "Template", "header_row": 2, "data_row": 4, "sheet_index": None},
         "Flipkart": {"sheet": None, "header_row": 1, "data_row": 5, "sheet_index": 2},
@@ -63,168 +79,219 @@ def process_file(input_file,
         "Ajio": {"sheet": None, "header_row": 2, "data_row": 3, "sheet_index": 2},
         "TataCliq": {"sheet": None, "header_row": 4, "data_row": 6, "sheet_index": 0},
         "General": {"sheet": None, "header_row": 1, "data_row": 2, "sheet_index": 0},
-        "Celio": {"sheet": None, "header_row": 1, "data_row": 2, "sheet_index": 0},
         "Zivame": {"sheet": None, "header_row": 1, "data_row": 2, "sheet_index": 0},
+        "Celio": {"sheet": None, "header_row": 1, "data_row": 2, "sheet_index": 0},
     }
 
-    cfg = marketplace_configs.get(marketplace, marketplace_configs["General"])
-    header_row = header_row_override if header_row_override is not None else cfg["header_row"]
-    data_row = data_row_override if data_row_override is not None else cfg["data_row"]
+    config = marketplace_configs.get(marketplace, marketplace_configs["General"])
+    header_row = header_row_override if header_row_override is not None else config["header_row"]
+    data_row = data_row_override if data_row_override is not None else config["data_row"]
 
+    # Read input workbook into DataFrame
     try:
         if marketplace == "Flipkart":
             xl = pd.ExcelFile(input_file)
-            temp = xl.parse(xl.sheet_names[cfg["sheet_index"]], header=None)
-            headers = temp.iloc[header_row-1].tolist()
-            src_df = temp.iloc[data_row-1:].copy()
+            temp_df = xl.parse(xl.sheet_names[config["sheet_index"]], header=None)
+            header_idx = header_row - 1
+            data_idx = data_row - 1
+            headers = temp_df.iloc[header_idx].tolist()
+            src_df = temp_df.iloc[data_idx:].copy()
             src_df.columns = headers
-        elif cfg["sheet"] is not None:
-            src_df = pd.read_excel(input_file, sheet_name=cfg["sheet"], header=header_row-1,
-                                   skiprows=data_row-header_row-1, dtype=str, engine="openpyxl")
+        elif config["sheet"] is not None:
+            src_df = pd.read_excel(input_file,
+                                   sheet_name=config["sheet"],
+                                   header=header_row - 1,
+                                   skiprows=data_row - header_row - 1,
+                                   dtype=str,
+                                   engine="openpyxl")
         else:
             xl = pd.ExcelFile(input_file)
-            src_df = xl.parse(xl.sheet_names[cfg["sheet_index"]], header=header_row-1,
-                              skiprows=data_row-header_row-1)
+            src_df = xl.parse(xl.sheet_names[config["sheet_index"]],
+                              header=header_row - 1,
+                              skiprows=data_row - header_row - 1)
     except Exception as e:
-        st.error(f"Error reading file for {marketplace}: {e}")
+        st.error(f"Error reading file for {marketplace} template: {e}")
         return None
 
-    src_df.dropna(axis=1, how='all', inplace=True)
+    # Drop fully empty columns
+    src_df.dropna(axis=1, how="all", inplace=True)
 
-    # build columns meta
+    # Build columns_meta: use mapping_df per column when available, else auto-detect
     columns_meta = []
-    use_mapping = mapping_df is not None
-    if use_mapping:
-        for col in src_df.columns:
-            col_key = norm(col)
+    for col in src_df.columns:
+        col_key = norm(col)
+        if mapping_df is not None and "__attr_key" in mapping_df.columns:
             matches = mapping_df[mapping_df["__attr_key"] == col_key]
-            if not matches.empty:
-                row3 = matches.iloc[0][MAND_KEY]
-                row4 = matches.iloc[0][TYPE_KEY]
-            else:
-                row3 = "mandatory"
-                row4 = "imageurlarray" if is_image_column(col_key, src_df[col]) else "string"
-            columns_meta.append({"src": col, "out": col, "row3": row3, "row4": row4})
+        else:
+            matches = pd.DataFrame()
+
+        if not matches.empty:
+            row3 = matches.iloc[0].get(MAND_KEY, "mandatory")
+            row4 = matches.iloc[0].get(TYPE_KEY, "string")
+        else:
+            row3 = "mandatory"
+            row4 = "imageurlarray" if is_image_column(col_key, src_df[col]) else "string"
+
+        columns_meta.append({"src": col, "out": col, "row3": row3, "row4": row4})
+
+        # handle duplicate targets from mapping workbook if any
+        if not matches.empty:
             for _, row in matches.iterrows():
-                if str(row[DUP_KEY]).lower().startswith("yes"):
-                    new_header = row[TARGET_KEY] if pd.notna(row[TARGET_KEY]) else col
+                if str(row.get(DUP_KEY, "")).lower().startswith("yes"):
+                    new_header = row.get(TARGET_KEY, col) if pd.notna(row.get(TARGET_KEY, None)) else col
                     if new_header != col:
-                        columns_meta.append({"src": col, "out": new_header, "row3": row[MAND_KEY], "row4": row[TYPE_KEY]})
-    else:
-        for col in src_df.columns:
-            dtype = "imageurlarray" if is_image_column(norm(col), src_df[col]) else "string"
-            columns_meta.append({"src": col, "out": col, "row3": "mandatory", "row4": dtype})
+                        columns_meta.append({"src": col, "out": new_header, "row3": row.get(MAND_KEY, "mandatory"), "row4": row.get(TYPE_KEY, "string")})
 
-    # detect options
-    color_cols = [c for c in src_df.columns if "color" in norm(c) or "colour" in norm(c)]
-    size_cols = [c for c in src_df.columns if "size" in norm(c)]
+    # If General and user supplied explicit column names, ensure they are present in columns_meta (as normal columns)
+    if marketplace.strip() == "General":
+        if general_style_col and any(str(c).strip() == general_style_col.strip() for c in src_df.columns):
+            # if present, ensure it's represented (it already will be from src_df iteration)
+            pass
+        if general_seller_sku_col and any(str(c).strip() == general_seller_sku_col.strip() for c in src_df.columns):
+            pass
+        # Note: we DO NOT auto-create variantId / SKU Code even if these values exist.
 
-    option1 = pd.Series([""]*len(src_df), dtype=str)
-    option2 = pd.Series([""]*len(src_df), dtype=str)
+    # Identify option columns (Option 1 = size, Option 2 = color)
+    color_cols = [col for col in src_df.columns if "color" in norm(col) or "colour" in norm(col)]
+    size_cols  = [col for col in src_df.columns if "size" in norm(col)]
+
+    option1_data = pd.Series([""] * len(src_df), dtype=str)
+    option2_data = pd.Series([""] * len(src_df), dtype=str)
+
     if size_cols:
-        option1 = src_df[size_cols[0]].fillna('').astype(str).str.strip()
+        option1_data = src_df[size_cols[0]].fillna('').astype(str).str.strip()
         if color_cols and color_cols[0] != size_cols[0]:
-            option2 = src_df[color_cols[0]].fillna('').astype(str).str.strip()
+            option2_data = src_df[color_cols[0]].fillna('').astype(str).str.strip()
     elif color_cols:
-        option2 = src_df[color_cols[0]].fillna('').astype(str).str.strip()
+        option2_data = src_df[color_cols[0]].fillna('').astype(str).str.strip()
 
-    # build workbook
+    # Build the output workbook from template
     wb = openpyxl.load_workbook(TEMPLATE_PATH)
     ws_vals = wb["Values"]
     ws_types = wb["Types"]
 
+    # Write main mapped/auto-mapped columns to Values and Types
     for j, meta in enumerate(columns_meta, start=1):
         header_display = clean_header(meta["out"])
         ws_vals.cell(row=1, column=j, value=header_display)
         for i, v in enumerate(src_df[meta["src"]].tolist(), start=2):
-            ws_vals.cell(row=i, column=j, value=(str(v) if (v is not None and v != "") else None))
-            if v is not None and v != "":
-                ws_vals.cell(row=i, column=j).number_format = "@"
+            if pd.isna(v) or v == "":
+                ws_vals.cell(row=i, column=j, value=None)
+            else:
+                cell = ws_vals.cell(row=i, column=j, value=str(v))
+                cell.number_format = "@"
         tcol = j + 2
         ws_types.cell(row=1, column=tcol, value=header_display)
         ws_types.cell(row=2, column=tcol, value=header_display)
         ws_types.cell(row=3, column=tcol, value=meta["row3"])
         ws_types.cell(row=4, column=tcol, value=meta["row4"])
 
-    # option cols
-    opt1_col = len(columns_meta)+1
-    opt2_col = opt1_col+1
+    # Append Option columns to Values
+    opt1_col = len(columns_meta) + 1
+    opt2_col = len(columns_meta) + 2
     ws_vals.cell(row=1, column=opt1_col, value="Option 1")
     ws_vals.cell(row=1, column=opt2_col, value="Option 2")
-    for i, v in enumerate(option1.tolist(), start=2): ws_vals.cell(row=i, column=opt1_col, value=v or None)
-    for i, v in enumerate(option2.tolist(), start=2): ws_vals.cell(row=i, column=opt2_col, value=v or None)
+    for i, v in enumerate(option1_data.tolist(), start=2):
+        ws_vals.cell(row=i, column=opt1_col, value=v if v else None)
+    for i, v in enumerate(option2_data.tolist(), start=2):
+        ws_vals.cell(row=i, column=opt2_col, value=v if v else None)
 
-    t1 = opt1_col+2
-    t2 = opt2_col+2
-    ws_types.cell(row=1, column=t1, value="Option 1")
-    ws_types.cell(row=2, column=t1, value="Option 1")
-    ws_types.cell(row=3, column=t1, value="non mandatory")
-    ws_types.cell(row=4, column=t1, value="select")
-    ws_types.cell(row=1, column=t2, value="Option 2")
-    ws_types.cell(row=2, column=t2, value="Option 2")
-    ws_types.cell(row=3, column=t2, value="non mandatory")
-    ws_types.cell(row=4, column=t2, value="select")
+    # Append Option columns to Types
+    t1_col = opt1_col + 2
+    t2_col = opt2_col + 2
+    ws_types.cell(row=1, column=t1_col, value="Option 1")
+    ws_types.cell(row=2, column=t1_col, value="Option 1")
+    ws_types.cell(row=3, column=t1_col, value="non mandatory")
+    ws_types.cell(row=4, column=t1_col, value="select")
+    ws_types.cell(row=1, column=t2_col, value="Option 2")
+    ws_types.cell(row=2, column=t2_col, value="Option 2")
+    ws_types.cell(row=3, column=t2_col, value="non mandatory")
+    ws_types.cell(row=4, column=t2_col, value="select")
 
-    unique_opt1 = option1.dropna().unique().tolist()
-    unique_opt2 = option2.dropna().unique().tolist()
-    for i, v in enumerate(unique_opt1, start=5): ws_types.cell(row=i, column=t1, value=v)
-    for i, v in enumerate(unique_opt2, start=5): ws_types.cell(row=i, column=t2, value=v)
+    unique_opt1 = option1_data.dropna().unique().tolist()
+    unique_opt2 = option2_data.dropna().unique().tolist()
+    for i, v in enumerate(unique_opt1, start=5):
+        ws_types.cell(row=i, column=t1_col, value=v)
+    for i, v in enumerate(unique_opt2, start=5):
+        ws_types.cell(row=i, column=t2_col, value=v)
 
-    # product/variant mapping
-    marketplace_id_map = {
-        "Amazon": ("Seller SKU", "Parent SKU"),
-        "Myntra": ("styleId", "styleGroupId"),
-        "Ajio": ("*Item SKU", "*Style Code"),
-        "Flipkart": ("Seller SKU ID", "Style Code"),
-        "TataCliq": ("Seller Article SKU", "*Style Code"),
-        "Zivame": ("Style Code", "SKU Code"),
-        "Celio": ("Style Code", "SKU Code"),
-    }
-
-    def match_header(preferred, cols):
-        if not preferred:
-            return None
-        if "*" in preferred:
-            needle = norm(preferred.replace("*", ""))
-            return next((c for c in cols if needle in norm(c)), None)
-        return next((c for c in cols if norm(c) == norm(preferred)), None)
-
-    if marketplace.strip() == "General":
-        style_col = match_header(general_style_col, src_df.columns) if general_style_col else None
-        sku_col = match_header(general_seller_sku_col, src_df.columns) if general_seller_sku_col else None
-        append_ids = bool(style_col or sku_col)
-    else:
-        p_prod, p_var = marketplace_id_map.get(marketplace, (None, None))
-        style_col = match_header(p_prod, src_df.columns)
-        sku_col = match_header(p_var, src_df.columns)
-        append_ids = True
-
-    if append_ids:
-        prod_vals = src_df[style_col].fillna('').astype(str) if style_col else pd.Series(['']*len(src_df))
-        var_vals = src_df[sku_col].fillna('').astype(str) if sku_col else pd.Series(['']*len(src_df))
-
-        if prod_vals.str.strip().replace('', pd.NA).notna().any() or var_vals.str.strip().replace('', pd.NA).notna().any():
-            start = ws_vals.max_column + 1
-            vcol = start
-            pcol = start + 1
-            if var_vals.str.strip().replace('', pd.NA).notna().any(): ws_vals.cell(row=1, column=vcol, value="variantId")
-            if prod_vals.str.strip().replace('', pd.NA).notna().any(): ws_vals.cell(row=1, column=pcol, value="productId")
-            for i, v in enumerate(var_vals.tolist(), start=2): ws_vals.cell(row=i, column=vcol, value=v or None)
-            for i, v in enumerate(prod_vals.tolist(), start=2): ws_vals.cell(row=i, column=pcol, value=v or None)
-            tv = vcol + 2
-            tp = pcol + 2
-            if var_vals.str.strip().replace('', pd.NA).notna().any():
-                ws_types.cell(row=1, column=tv, value="variantId")
-                ws_types.cell(row=2, column=tv, value="variantId")
-                ws_types.cell(row=3, column=tv, value="mandatory")
-                ws_types.cell(row=4, column=tv, value="string")
-            if prod_vals.str.strip().replace('', pd.NA).notna().any():
-                ws_types.cell(row=1, column=tp, value="productId")
-                ws_types.cell(row=2, column=tp, value="productId")
-                ws_types.cell(row=3, column=tp, value="mandatory")
-                ws_types.cell(row=4, column=tp, value="string")
+    # NOTE: We intentionally do NOT append variantId/SKU Code columns for any marketplace.
+    # If you want mapped product/variant columns to appear, please provide explicit column names
+    # in the General UI (those will be included as normal output columns if present in the input).
 
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)
     return buf
+
+# ───────────────────────── STREAMLIT UI ─────────────────────────
+st.set_page_config(page_title="SKU Template Automation", layout="wide")
+st.title("📊 SKU Template Automation Tool")
+
+mapping_df = load_mapping()  # mapping workbook used internally; not shown in UI
+
+# marketplace selection (include all relevant marketplaces)
+marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio"]
+marketplace_type = st.selectbox("Select Template Type", marketplace_options)
+
+# marketplace defaults for header/data rows (used when General not selected)
+marketplace_defaults = {
+    "Amazon": (2, 4),
+    "Flipkart": (1, 5),
+    "Myntra": (3, 4),
+    "Ajio": (2, 3),
+    "TataCliq": (4, 6),
+    "General": (1, 2),
+    "Celio": (1, 2),
+    "Zivame": (1, 2),
+}
+
+# Show header/data + optional Style/SKU inputs ONLY for General
+if marketplace_type == "General":
+    st.markdown("### Header & Data rows\nSpecify which line contains the header and which line data starts (1-indexed).")
+    col1, col2 = st.columns(2)
+    with col1:
+        header_row = st.number_input("Header row (line number containing column headers)", min_value=1, value=marketplace_defaults["General"][0])
+    with col2:
+        data_row = st.number_input("Data start row (first line of actual data)", min_value=1, value=marketplace_defaults["General"][1])
+
+    st.markdown("### General template: optional column names")
+    st.caption("If your input file uses custom column names for Style Code / Seller SKU ID, provide the exact column names here. If left blank they won't be used.")
+    col3, col4 = st.columns(2)
+    with col3:
+        general_style_col = st.text_input("Style Code column name (optional)")
+    with col4:
+        general_seller_sku_col = st.text_input("Seller SKU column name (optional)")
+else:
+    # For non-General templates we use defaults and do not expose General-only inputs
+    header_row, data_row = marketplace_defaults.get(marketplace_type, (1, 2))
+    general_style_col = None
+    general_seller_sku_col = None
+
+# file uploader
+input_file = st.file_uploader("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])
+
+if input_file:
+    with st.spinner("Processing…"):
+        result = process_file(
+            input_file,
+            marketplace_type,
+            mapping_df=mapping_df,
+            header_row_override=int(header_row),
+            data_row_override=int(data_row),
+            general_style_col=general_style_col if general_style_col and general_style_col.strip() else None,
+            general_seller_sku_col=general_seller_sku_col if general_seller_sku_col and general_seller_sku_col.strip() else None,
+        )
+
+    if result:
+        st.success("✅ Output Generated!")
+        st.download_button(
+            "📥 Download Output",
+            data=result,
+            file_name="output_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_button"
+        )
+
+st.markdown("---")
+st.caption("Built for Rubick.ai | By Vishnu Sai")
