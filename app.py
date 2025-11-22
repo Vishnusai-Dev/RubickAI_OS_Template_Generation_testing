@@ -270,10 +270,8 @@ if input_file:
     if src_df is not None:
         # Show the header row values and first 3 data rows directly for General only
         if marketplace_type == "General":
-            st.markdown("**Detected header row values**")
-            header_row_vals = list(src_df.columns)
-            st.write(header_row_vals)
-            st.markdown("**Sample data (first 3 rows)**")
+            # Removed detected header row values display
+            st.markdown("**Sample data (first 3 rows)**") (first 3 rows)**")
             st.dataframe(src_df.head(3))
 
             # Build dropdowns from detected headers for selecting Style / Seller columns
