@@ -79,10 +79,12 @@ def process_file(input_file,
             src_df = temp.iloc[data_row-1:].copy()
             src_df.columns = headers
         elif cfg["sheet"] is not None:
-            src_df = pd.read_excel(input_file, sheet_name=cfg["sheet"], header=header_row-1, skiprows=data_row-header_row-1, dtype=str, engine="openpyxl")
+            src_df = pd.read_excel(input_file, sheet_name=cfg["sheet"], header=header_row-1,
+                                   skiprows=data_row-header_row-1, dtype=str, engine="openpyxl")
         else:
             xl = pd.ExcelFile(input_file)
-            src_df = xl.parse(xl.sheet_names[cfg["sheet_index"]], header=header_row-1, skiprows=data_row-header_row-1)
+            src_df = xl.parse(xl.sheet_names[cfg["sheet_index"]], header=header_row-1,
+                              skiprows=data_row-header_row-1)
     except Exception as e:
         st.error(f"Error reading file for {marketplace}: {e}")
         return None
@@ -226,38 +228,3 @@ def process_file(input_file,
     wb.save(buf)
     buf.seek(0)
     return buf
-
-# ---------------- UI ----------------
-st.set_page_config(page_title="SKU Template Automation", layout="wide")
-st.title("📊 SKU Template Automation Tool")
-
-mapping_df = load_mapping()
-
-marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio"]
-marketplace_type = st.selectbox("Select Template Type", marketplace_options)
-
-marketplace_defaults = {
-    "Amazon": (2,4),
-    "Flipkart": (1,5),
-    "Myntra": (3,4),
-    "Ajio": (2,3),
-    "TataCliq": (4,6),
-    "General": (1,2),
-    "Celio": (1,2),
-    "Zivame": (1,2)
-}
-
-# show header/data and general mappings ONLY for General
-if marketplace_type == "General":
-    st.markdown("""
-    ### Header & Data rows
-    Specify which line contains the header and which line data starts (1-indexed).
-    """)
-    col1, col2 = st.columns(2)
-    with col1:
-        header_row = st.number_input("Header row (line number containing column headers)", min_value=1, value=marketplace_defaults["General"][0])
-    with col2:
-        data_row = st.number_input("Data start row (first line of actual data)", min_value=1, value=marketplace_defaults["General"][1])
-
-    st.markdown("""
-We created the clean file; now must respond telling user file created and fixed. The create_textdoc succeeded. Now reply summarizing fix and instruct user to run. Also note that developer message said refer to latest state when user requests edits; but we created new clean file. Now respond: file created, name, explain fixes, how to test, offer to replace original corrupted file. No further clarifying questions. Let's produce final message. Ensure warm, concise. Provide next steps to run and confirm. Also mention that the old corrupted file remains and can be deleted. Done.
