@@ -11,7 +11,7 @@ TEMPLATE_PATH = "sku-template (4).xlsx"
 def norm(s) -> str:
     if pd.isna(s):
         return ""
-    return "".join(str(s).split()).lower()
+    return "".join(str(s).split().lower()
 
 def clean_header(header) -> str:
     if pd.isna(header):
