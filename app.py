@@ -11,7 +11,8 @@ TEMPLATE_PATH = "sku-template (4).xlsx"
 def norm(s) -> str:
     if pd.isna(s):
         return ""
-    return "".join(str(s).split().lower()
+    # join tokens and lowercase
+    return "".join(str(s).split()).lower()
 
 def clean_header(header) -> str:
     if pd.isna(header):
@@ -250,15 +251,9 @@ def process_file(
 
 # ───────────────────────── STREAMLIT UI ─────────────────────────
 st.set_page_config(page_title="SKU Template Automation", layout="wide")
-# Title only (logo removed)
-# --- Centered Base64 Logo and Title ---
-LOGO_BASE64 = """" + content + """"" + encoded + """"
-<div style='text-align:center;'>
-    <img src='data:image/png;base64,{LOGO_BASE64}' width='240'/>
-</div>
-""", unsafe_allow_html=True)
 
-st.markdown("<h1 style='text-align:center;'>Rubick OS Template Conversion</h1>", unsafe_allow_html=True)
+# Title only (logo removed)
+st.title("Rubick OS Template Conversion")
 
 marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio"]
 marketplace_type = st.selectbox("Select Template Type", marketplace_options)
@@ -356,8 +351,8 @@ if input_file:
                     "📥 Download Output",
                     data=result,
                     file_name="output_template.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="download_button"
+                    mime="application/vnd.openxmlformats-officedocument-spreadsheetml.sheet",
+                        key="download_button"
                 )
 else:
     st.info("Upload a file to enable header-detection and column selection dropdowns (General only).")
