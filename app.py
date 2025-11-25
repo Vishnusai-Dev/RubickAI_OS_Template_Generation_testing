@@ -302,9 +302,9 @@ if input_file:
             cols = ["(none)"] + [str(c) for c in src_df.columns]
             col1, col2 = st.columns(2)
             with col1:
-                selected_variant_col = st.selectbox("Style Code → variantId (leave '(none)' to skip)", options=cols, index=0)
+                selected_variant_col = st.selectbox("Style Code → productId (leave '(none)' to skip)", options=cols, index=0)
             with col2:
-                selected_product_col = st.selectbox("Seller SKU → productId (leave '(none)' to skip)", options=cols, index=0)
+                selected_product_col = st.selectbox("Seller SKU → variantId (leave '(none)' to skip)", options=cols, index=0)
 
         else:
             # Non-General: don't show any header/data UI, but display a small preview
