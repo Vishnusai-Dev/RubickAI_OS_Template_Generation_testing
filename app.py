@@ -368,12 +368,12 @@ def merge_flipkart_files(catalog_file=None, listing_file=None):
     lst_df = None
 
     if catalog_file is not None:
-        # Catalog: sheet index 3, header row 1, data row 5 (rows 2-4 are junk)
-        cat_df = read_sheet(catalog_file, sheet_index=3, header_row=1, data_row=5)
+        # Catalog: sheet index 2 (3rd tab), header row 1, data row 5 (rows 2-4 are junk)
+        cat_df = read_sheet(catalog_file, sheet_index=2, header_row=1, data_row=5)
 
     if listing_file is not None:
-        # Listing: sheet index 1, header row 1, data row 3 (row 2 is junk)
-        lst_df = read_sheet(listing_file, sheet_index=1, header_row=1, data_row=3)
+        # Listing: sheet index 0 (1st tab), header row 1, data row 3 (row 2 is junk)
+        lst_df = read_sheet(listing_file, sheet_index=0, header_row=1, data_row=3)
 
     # Only one file uploaded — return it as-is
     if cat_df is None:
