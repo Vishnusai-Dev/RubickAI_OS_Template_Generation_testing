@@ -411,12 +411,12 @@ def merge_flipkart_files(catalog_file=None, listing_file=None):
     cat_df[cat_join] = cat_df[cat_join].astype(str).str.strip()
     lst_df[lst_join] = lst_df[lst_join].astype(str).str.strip()
 
-    # Drop columns from listing that already exist in catalog (exact name match),
-    # keeping the join key for merging
-    cat_cols = set(cat_df.columns)
+    # Drop columns from listing that already exist in catalog.
+    # Compare using norm() to catch case/space differences and dedupe suffixes.
+    cat_norms = set(norm(str(c)) for c in cat_df.columns)
     lst_cols_to_keep = [lst_join] + [
         c for c in lst_df.columns
-        if c != lst_join and c not in cat_cols
+        if c != lst_join and norm(str(c)) not in cat_norms
     ]
     lst_df_trimmed = lst_df[lst_cols_to_keep]
 
