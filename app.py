@@ -221,6 +221,12 @@ def generate_style_group_id(df, marketplace):
     )
     df[image_col]  = df[image_col].astype(str).str.strip()
     parent_counts  = df[parent_col].value_counts()
+
+    # If no parent has more than 1 row, assign sequential IDs (1, 2, 3...)
+    if not any(v > 1 for v in parent_counts.values):
+        df["styleGroupId"] = [str(i + 1) for i in range(len(df))]
+        return df
+
     style_keys = []
     for _, row in df.iterrows():
         parent = row[parent_col]
@@ -228,15 +234,11 @@ def generate_style_group_id(df, marketplace):
         price  = row[price_col]
         image  = row[image_col]
         if parent_counts.get(parent, 0) > 1:
-            # Parent has multiple rows (size variants of same style/color)
-            # Always key by parent + color + price regardless of image count
+            # Parent has multiple rows (size variants) — key by parent+color+price
             key = f"{parent}_{color}_{price}"
         else:
-            # Single row for this parent — key by image + color + price
-            if image and str(image).strip() not in ("", "nan", "None"):
-                key = f"{image}_{color}_{price}"
-            else:
-                key = None
+            # Single row for this parent — skip
+            key = None
         style_keys.append(key)
     df["_style_key"] = style_keys
     valid_keys = df["_style_key"].dropna().unique()
