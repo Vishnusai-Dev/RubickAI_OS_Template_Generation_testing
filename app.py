@@ -357,9 +357,12 @@ def process_file(
     batch_id_str = str(batch_id)
     num_rows     = len(src_df)
 
-    # auto-map every column
+    # auto-map every column (skip generated columns handled separately)
+    _SKIP_COLS = {"styleGroupId"}
     columns_meta = []
     for col in src_df.columns:
+        if str(col) in _SKIP_COLS:
+            continue
         # Meesho: column headers are in format "\n\nField Name\n\nDescription\n"
         # Split by newline, take first non-empty part as the field name
         if marketplace == "Meesho":
