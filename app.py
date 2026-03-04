@@ -354,6 +354,7 @@ def merge_flipkart_files(catalog_file=None, listing_file=None):
     duplicate columns, return merged DataFrame.
     """
     def read_sheet(f, sheet_index, header_row, data_row):
+        """Read sheet with exact header and data row numbers (1-indexed)."""
         xl = pd.ExcelFile(f)
         temp = xl.parse(xl.sheet_names[sheet_index], header=None)
         headers = temp.iloc[header_row - 1].tolist()
@@ -367,9 +368,11 @@ def merge_flipkart_files(catalog_file=None, listing_file=None):
     lst_df = None
 
     if catalog_file is not None:
+        # Catalog: sheet index 3, header row 1, data row 5 (rows 2-4 are junk)
         cat_df = read_sheet(catalog_file, sheet_index=3, header_row=1, data_row=5)
 
     if listing_file is not None:
+        # Listing: sheet index 1, header row 1, data row 3 (row 2 is junk)
         lst_df = read_sheet(listing_file, sheet_index=1, header_row=1, data_row=3)
 
     # Only one file uploaded — return it as-is
@@ -378,13 +381,30 @@ def merge_flipkart_files(catalog_file=None, listing_file=None):
     if lst_df is None:
         return cat_df
 
-    # Find join column in both
-    cat_join = find_column_by_name_like(cat_df, FLIPKART_JOIN_COL)
-    lst_join = find_column_by_name_like(lst_df, FLIPKART_JOIN_COL)
+    # Find join column in both — try exact, then partial fallbacks
+    def find_serial_col(df):
+        # Try exact match first
+        col = find_column_by_name_like(df, FLIPKART_JOIN_COL)
+        if col:
+            return col
+        # Try any column containing "serial"
+        for c in df.columns:
+            if "serial" in norm(str(c)):
+                return c
+        return None
+
+    cat_join = find_serial_col(cat_df)
+    lst_join = find_serial_col(lst_df)
 
     if not cat_join or not lst_join:
-        # Can't join — just return catalog
-        st.warning("⚠️ 'Flipkart Serial Number' column not found in one of the files. Using Catalog only.")
+        debug_lines = []
+        if not cat_join:
+            debug_lines.append(f"**Catalog** (sheet 3) — all columns found: `{list(cat_df.columns)}`")
+        if not lst_join:
+            debug_lines.append(f"**Listing** (sheet 1) — all columns found: `{list(lst_df.columns)}`")
+        st.error("❌ Could not find 'Flipkart Serial Number' in one or both files. See column names below:")
+        for line in debug_lines:
+            st.markdown(line)
         return cat_df
 
     # Normalise join key
