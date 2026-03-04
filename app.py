@@ -1,4 +1,4 @@
-import streamlit as st
+]import streamlit as st
 import pandas as pd
 import openpyxl
 import re
@@ -342,6 +342,76 @@ def read_input_to_df(input_file, marketplace, header_row=1, data_row=2, sheet_na
     return src_df
 
 
+
+# ───────────────── FLIPKART FILE MERGE ─────────────────────────
+FLIPKART_JOIN_COL = "Flipkart Serial Number"
+
+def merge_flipkart_files(catalog_file=None, listing_file=None):
+    """
+    Read Catalog (sheet index 3, header 1, data 5) and/or
+    Listing (sheet index 1, header 1, data 3), join on
+    'Flipkart Serial Number' (left join on Catalog), drop exact
+    duplicate columns, return merged DataFrame.
+    """
+    def read_sheet(f, sheet_index, header_row, data_row):
+        xl = pd.ExcelFile(f)
+        temp = xl.parse(xl.sheet_names[sheet_index], header=None)
+        headers = temp.iloc[header_row - 1].tolist()
+        df = temp.iloc[data_row - 1:].copy()
+        df.columns = dedupe_columns(headers)
+        df.reset_index(drop=True, inplace=True)
+        df.dropna(axis=1, how="all", inplace=True)
+        return df
+
+    cat_df = None
+    lst_df = None
+
+    if catalog_file is not None:
+        cat_df = read_sheet(catalog_file, sheet_index=3, header_row=1, data_row=5)
+
+    if listing_file is not None:
+        lst_df = read_sheet(listing_file, sheet_index=1, header_row=1, data_row=3)
+
+    # Only one file uploaded — return it as-is
+    if cat_df is None:
+        return lst_df
+    if lst_df is None:
+        return cat_df
+
+    # Find join column in both
+    cat_join = find_column_by_name_like(cat_df, FLIPKART_JOIN_COL)
+    lst_join = find_column_by_name_like(lst_df, FLIPKART_JOIN_COL)
+
+    if not cat_join or not lst_join:
+        # Can't join — just return catalog
+        st.warning("⚠️ 'Flipkart Serial Number' column not found in one of the files. Using Catalog only.")
+        return cat_df
+
+    # Normalise join key
+    cat_df[cat_join] = cat_df[cat_join].astype(str).str.strip()
+    lst_df[lst_join] = lst_df[lst_join].astype(str).str.strip()
+
+    # Drop columns from listing that already exist in catalog (exact name match),
+    # keeping the join key for merging
+    cat_cols = set(cat_df.columns)
+    lst_cols_to_keep = [lst_join] + [
+        c for c in lst_df.columns
+        if c != lst_join and c not in cat_cols
+    ]
+    lst_df_trimmed = lst_df[lst_cols_to_keep]
+
+    merged = pd.merge(
+        cat_df, lst_df_trimmed,
+        left_on=cat_join, right_on=lst_join,
+        how="left"
+    )
+    # Drop duplicate join key column if names differ
+    if cat_join != lst_join and lst_join in merged.columns:
+        merged.drop(columns=[lst_join], inplace=True)
+
+    merged.reset_index(drop=True, inplace=True)
+    return merged
+
 def process_file(
     input_file,
     marketplace: str,
@@ -350,13 +420,17 @@ def process_file(
     general_header_row: int = 1,
     general_data_row: int = 2,
     general_sheet_name: str | None = None,
+    premerged_df=None,
 ):
-    src_df = read_input_to_df(
-        input_file, marketplace,
-        header_row=general_header_row,
-        data_row=general_data_row,
-        sheet_name=general_sheet_name
-    )
+    if premerged_df is not None:
+        src_df = premerged_df.copy()
+    else:
+        src_df = read_input_to_df(
+            input_file, marketplace,
+            header_row=general_header_row,
+            data_row=general_data_row,
+            sheet_name=general_sheet_name
+        )
     src_df = generate_style_group_id(src_df, marketplace)
 
     # ── Claim BatchID FIRST (before any processing) ──────────────
@@ -622,7 +696,20 @@ if marketplace_type == "General":
         st.error("Data row must be a number.")
         general_data_row = 2
 
-input_file = st.file_uploader("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])
+# ── Flipkart: dual file uploaders ─────────────────────────────
+flipkart_catalog_file = None
+flipkart_listing_file = None
+
+if marketplace_type == "Flipkart":
+    st.info("📂 Upload one or both Flipkart files. At least one is required.")
+    col_cat, col_lst = st.columns(2)
+    with col_cat:
+        flipkart_catalog_file = st.file_uploader("Catalog File", type=["xlsx", "xls", "xlsm"], key="fk_catalog")
+    with col_lst:
+        flipkart_listing_file = st.file_uploader("Listing File", type=["xlsx", "xls", "xlsm"], key="fk_listing")
+    input_file = flipkart_catalog_file or flipkart_listing_file  # at least one needed
+else:
+    input_file = st.file_uploader("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])
 
 selected_variant_col = "(none)"
 selected_product_col = "(none)"
@@ -639,12 +726,18 @@ if input_file:
             selected_sheet = None
 
     try:
-        src_df = read_input_to_df(
-            input_file, marketplace_type,
-            header_row=general_header_row,
-            data_row=general_data_row,
-            sheet_name=selected_sheet
-        )
+        if marketplace_type == "Flipkart":
+            src_df = merge_flipkart_files(
+                catalog_file=flipkart_catalog_file,
+                listing_file=flipkart_listing_file
+            )
+        else:
+            src_df = read_input_to_df(
+                input_file, marketplace_type,
+                header_row=general_header_row,
+                data_row=general_data_row,
+                sheet_name=selected_sheet
+            )
     except Exception as e:
         st.error(f"Failed to parse uploaded file: {e}")
         src_df = None
@@ -699,6 +792,12 @@ if input_file:
     else:
         with st.spinner("Processing…"):
             try:
+                _premerged = None
+                if marketplace_type == "Flipkart":
+                    _premerged = merge_flipkart_files(
+                        catalog_file=flipkart_catalog_file,
+                        listing_file=flipkart_listing_file
+                    )
                 result, assigned_batch_id = process_file(
                     input_file, marketplace_type,
                     selected_variant_col=None,
@@ -706,6 +805,7 @@ if input_file:
                     general_header_row=general_header_row,
                     general_data_row=general_data_row,
                     general_sheet_name=None,
+                    premerged_df=_premerged,
                 )
                 if result:
                     st.success(f"✅ Output Generated! — BatchID assigned: **{assigned_batch_id}**")
