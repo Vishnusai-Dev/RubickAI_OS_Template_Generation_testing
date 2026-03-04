@@ -187,7 +187,7 @@ STYLE_GROUP_MAPPING = {
     "Flipkart": {
         "parent": "Style Code",
         "color":  "Brand Color",
-        "price":  "MRP (INR)",
+        "price":  "MRP",
         "image":  "Main Image URL"
     },
     "Meesho": {
