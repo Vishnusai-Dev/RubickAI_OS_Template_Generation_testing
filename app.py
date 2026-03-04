@@ -207,12 +207,8 @@ def generate_style_group_id(df, marketplace):
     color_col  = find_column_by_name_like(df, mapping["color"])
     price_col  = find_column_by_name_like(df, mapping["price"])
     image_col  = find_column_by_name_like(df, mapping["image"])
-    if not color_col or not price_col or not image_col:
-        df["styleGroupId"] = ""
-        return df
-
-    # If parent_col not found, assign sequential IDs directly
-    if not parent_col:
+    # If any required column is missing, fall back to sequential IDs
+    if not parent_col or not color_col or not price_col or not image_col:
         df["styleGroupId"] = [str(i + 1) for i in range(len(df))]
         return df
     df[parent_col] = df[parent_col].astype(str).str.strip()
