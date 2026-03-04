@@ -228,13 +228,12 @@ def generate_style_group_id(df, marketplace):
         price  = row[price_col]
         image  = row[image_col]
         if parent_counts.get(parent, 0) > 1:
-            images_in_parent = df[df[parent_col] == parent][image_col].nunique()
-            if images_in_parent == 1:
-                key = f"{parent}_{color}_{price}"
-            else:
-                key = None
+            # Parent has multiple rows (size variants of same style/color)
+            # Always key by parent + color + price regardless of image count
+            key = f"{parent}_{color}_{price}"
         else:
-            if image:
+            # Single row for this parent — key by image + color + price
+            if image and str(image).strip() not in ("", "nan", "None"):
                 key = f"{image}_{color}_{price}"
             else:
                 key = None
