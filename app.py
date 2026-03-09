@@ -207,9 +207,30 @@ def generate_style_group_id(df, marketplace):
     color_col  = find_column_by_name_like(df, mapping["color"])
     price_col  = find_column_by_name_like(df, mapping["price"])
     image_col  = find_column_by_name_like(df, mapping["image"])
-    # If any required column is missing, fall back to sequential IDs
-    if not parent_col or not color_col or not price_col or not image_col:
+    # If color/price/image missing, fall back to sequential IDs
+    if not color_col or not price_col or not image_col:
         df["styleGroupId"] = [str(i + 1) for i in range(len(df))]
+        return df
+
+    # If parent_col not found, group by image + color + price
+    if not parent_col:
+        df[color_col] = df[color_col].astype(str).str.strip().str.lower().str.replace(" ", "", regex=False)
+        df[price_col] = pd.to_numeric(df[price_col], errors="coerce").fillna(0).astype(int).astype(str)
+        df[image_col] = df[image_col].astype(str).str.strip()
+        style_keys = []
+        for _, row in df.iterrows():
+            color = row[color_col]
+            price = row[price_col]
+            image = row[image_col]
+            if image and image not in ("", "nan", "None"):
+                style_keys.append(f"{image}_{color}_{price}")
+            else:
+                style_keys.append(None)
+        df["_style_key"] = style_keys
+        valid_keys = df["_style_key"].dropna().unique()
+        key_map = {k: i + 1 for i, k in enumerate(valid_keys)}
+        df["styleGroupId"] = df["_style_key"].map(key_map).fillna("").astype(str)
+        df.drop(columns=["_style_key"], inplace=True)
         return df
     df[parent_col] = df[parent_col].astype(str).str.strip()
     df[color_col]  = (
