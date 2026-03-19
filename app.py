@@ -234,18 +234,20 @@ def generate_style_group_id(df, marketplace):
         df[color_col] = df[color_col].astype(str).str.strip().str.lower().str.replace(" ", "", regex=False)
         df[price_col] = pd.to_numeric(df[price_col], errors="coerce").fillna(0).astype(int).astype(str)
         df[image_col] = df[image_col].astype(str).str.strip()
-        image_valid   = ~df[image_col].isin(["", "nan", "None"])
-        df["_style_key"] = None
-        df.loc[image_valid, "_style_key"] = (
-            df.loc[image_valid, image_col] + "_" +
-            df.loc[image_valid, color_col] + "_" +
-            df.loc[image_valid, price_col]
-        )
+        def _make_key_no_parent(row):
+            image = row[image_col]
+            color = row[color_col]
+            price = row[price_col]
+            if image not in ("", "nan", "None"):
+                return f"{image}_{color}_{price}"
+            return None
+        df["_style_key"] = df.apply(_make_key_no_parent, axis=1)
         valid_keys = df["_style_key"].dropna().unique()
         key_map = {k: i + 1 for i, k in enumerate(valid_keys)}
         df["styleGroupId"] = df["_style_key"].map(key_map).fillna("").astype(str)
         df.drop(columns=["_style_key"], inplace=True)
         return df
+    # Convert ALL key columns to string FIRST before any operations
     df[parent_col] = df[parent_col].astype(str).str.strip()
     df[color_col]  = (
         df[color_col].astype(str).str.strip().str.lower()
@@ -263,25 +265,21 @@ def generate_style_group_id(df, marketplace):
         df["styleGroupId"] = [str(i + 1) for i in range(len(df))]
         return df
 
-    # Build keys using vectorized operations to avoid iterrows() stale-copy issue
-    parent_count_series = df[parent_col].map(parent_counts).fillna(0)
-    has_multi_parent    = parent_count_series > 1
-    image_valid         = df[image_col].str.strip().isin(["", "nan", "None"]) == False
+    # Build style keys using apply (safe across all pandas versions)
+    parent_count_map = parent_counts.to_dict()
 
-    df["_style_key"] = None
-    # Rows with multiple-occurrence parent: key = parent+color+price
-    df.loc[has_multi_parent, "_style_key"] = (
-        df.loc[has_multi_parent, parent_col] + "_" +
-        df.loc[has_multi_parent, color_col]  + "_" +
-        df.loc[has_multi_parent, price_col]
-    )
-    # Rows with unique/no parent + valid image: key = image+color+price
-    solo_with_img = (~has_multi_parent) & image_valid
-    df.loc[solo_with_img, "_style_key"] = (
-        df.loc[solo_with_img, image_col] + "_" +
-        df.loc[solo_with_img, color_col] + "_" +
-        df.loc[solo_with_img, price_col]
-    )
+    def _make_key(row):
+        parent = row[parent_col]
+        color  = row[color_col]
+        price  = row[price_col]
+        image  = row[image_col]
+        if parent_count_map.get(parent, 0) > 1:
+            return f"{parent}_{color}_{price}"
+        elif image not in ("", "nan", "None"):
+            return f"{image}_{color}_{price}"
+        return None
+
+    df["_style_key"] = df.apply(_make_key, axis=1)
     valid_keys = df["_style_key"].dropna().unique()
     key_map = {k: i + 1 for i, k in enumerate(valid_keys)}
     df["styleGroupId"] = df["_style_key"].map(key_map).fillna("").astype(str)
