@@ -269,18 +269,25 @@ def generate_style_group_id(df, marketplace):
     # Build style keys using apply (safe across all pandas versions)
     parent_count_map = parent_counts.to_dict()
 
+    _debug_keys = []
     def _make_key(row):
         parent = row[parent_col]
         color  = row[color_col]
         price  = row[price_col]
         image  = row[image_col]
-        if parent_count_map.get(parent, 0) > 1:
-            return f"{parent}_{color}_{price}"
+        cnt = parent_count_map.get(parent, 0)
+        if cnt > 1:
+            key = f"{parent}_{color}_{price}"
         elif image not in ("", "nan", "None"):
-            return f"{image}_{color}_{price}"
-        return None
+            key = f"{image}_{color}_{price}"
+        else:
+            key = None
+        _debug_keys.append(f"parent='{str(parent)[:15]}' cnt={cnt} img='{str(image)[-20:]}' img_type={type(image).__name__} key='{str(key)[-20:] if key else None}'")
+        return key
 
     df["_style_key"] = df.apply(_make_key, axis=1)
+    import streamlit as _st2
+    _st2.text("\n".join(_debug_keys[15:35]))
     valid_keys = df["_style_key"].dropna().unique()
     key_map = {k: i + 1 for i, k in enumerate(valid_keys)}
     df["styleGroupId"] = df["_style_key"].map(key_map).fillna("").astype(str)
