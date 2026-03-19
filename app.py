@@ -199,6 +199,7 @@ STYLE_GROUP_MAPPING = {
 }
 
 def generate_style_group_id(df, marketplace):
+    import streamlit as _st; _st.warning(f"DEBUG: generate_style_group_id called for marketplace={marketplace}, rows={len(df)}, cols={list(df.columns[:5])}")
     mapping = STYLE_GROUP_MAPPING.get(marketplace)
     if not mapping:
         df["styleGroupId"] = ""
