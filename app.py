@@ -199,7 +199,6 @@ STYLE_GROUP_MAPPING = {
 }
 
 def generate_style_group_id(df, marketplace):
-    import streamlit as _st; _st.warning(f"DEBUG: generate_style_group_id called for marketplace={marketplace}, rows={len(df)}, cols={list(df.columns[:5])}")
     mapping = STYLE_GROUP_MAPPING.get(marketplace)
     if not mapping:
         df["styleGroupId"] = ""
@@ -259,7 +258,9 @@ def generate_style_group_id(df, marketplace):
         .fillna(0).astype(int).astype(str)
     )
     df[image_col]  = df[image_col].astype(str).str.strip()
-    parent_counts  = df[parent_col].value_counts()
+    # Exclude null-like values from parent counts so they don't get grouped
+    _NULL_PARENT_VALS = {"", "none", "nan", "null", "n/a"}
+    parent_counts  = df[parent_col][~df[parent_col].str.lower().isin(_NULL_PARENT_VALS)].value_counts()
 
     # If no parent has more than 1 row, assign sequential IDs (1, 2, 3...)
     if not any(v > 1 for v in parent_counts.values):
@@ -269,25 +270,23 @@ def generate_style_group_id(df, marketplace):
     # Build style keys using apply (safe across all pandas versions)
     parent_count_map = parent_counts.to_dict()
 
-    _debug_keys = []
+    # Exclude null-like parent values from grouping
+    _NULL_PARENTS = {"", "none", "nan", "null", "n/a"}
+
     def _make_key(row):
         parent = row[parent_col]
         color  = row[color_col]
         price  = row[price_col]
         image  = row[image_col]
-        cnt = parent_count_map.get(parent, 0)
-        if cnt > 1:
-            key = f"{parent}_{color}_{price}"
+        # Only group by parent if it's a real non-null parent with multiple rows
+        parent_is_valid = str(parent).strip().lower() not in _NULL_PARENTS
+        if parent_is_valid and parent_count_map.get(parent, 0) > 1:
+            return f"{parent}_{color}_{price}"
         elif image not in ("", "nan", "None"):
-            key = f"{image}_{color}_{price}"
-        else:
-            key = None
-        _debug_keys.append(f"parent='{str(parent)[:15]}' cnt={cnt} img='{str(image)[-20:]}' img_type={type(image).__name__} key='{str(key)[-20:] if key else None}'")
-        return key
+            return f"{image}_{color}_{price}"
+        return None
 
     df["_style_key"] = df.apply(_make_key, axis=1)
-    import streamlit as _st2
-    _st2.text("\n".join(_debug_keys[15:35]))
     valid_keys = df["_style_key"].dropna().unique()
     key_map = {k: i + 1 for i, k in enumerate(valid_keys)}
     df["styleGroupId"] = df["_style_key"].map(key_map).fillna("").astype(str)
