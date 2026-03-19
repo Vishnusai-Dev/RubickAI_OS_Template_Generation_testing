@@ -657,6 +657,17 @@ def process_file(
             var_series  = src_df[var_col].fillna("").astype(str)  if var_col  else None
             append_id_columns(var_series, prod_series)
 
+    # ── styleGroupId debug ───────────────────────────────────────
+    if "styleGroupId" in src_df.columns:
+        _sgi = src_df["styleGroupId"].astype(str)
+        _sku = src_df.get("SKU", pd.Series(range(len(src_df)))).astype(str)
+        _img = src_df.get("Main Image URL", pd.Series(["?"]*len(src_df))).astype(str)
+        debug_rows = []
+        for i in range(len(src_df)):
+            debug_rows.append(f"row{i}: sku={str(_sku.iloc[i])[:20]} | img_tail={str(_img.iloc[i])[-15:]} | sgi={_sgi.iloc[i]}")
+        st.text("\n".join(debug_rows[:50]))
+    # ────────────────────────────────────────────────────────────
+
     # ── styleGroupId column — only if at least one non-empty value ──
     sgi_series = src_df["styleGroupId"].astype(str).str.strip() if "styleGroupId" in src_df.columns else None
     if sgi_series is not None and sgi_series.replace("", pd.NA).dropna().shape[0] > 0:
