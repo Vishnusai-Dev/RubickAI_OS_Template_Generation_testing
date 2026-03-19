@@ -328,13 +328,16 @@ def read_input_to_df(input_file, marketplace, header_row=1, data_row=2, sheet_na
         src_df.reset_index(drop=True, inplace=True)
 
     elif config["sheet"] is not None:
-        xl = pd.ExcelFile(input_file)
-        temp_df = xl.parse(config["sheet"], header=None)
-        header_idx = config["header_row"] - 1
-        data_idx = config["data_row"] - 1
-        headers = temp_df.iloc[header_idx].tolist()
-        src_df = temp_df.iloc[data_idx:].copy()
-        src_df.columns = dedupe_columns(headers)
+        # Use openpyxl to avoid pandas/xlrd truncating URLs with special chars like +
+        _wb = openpyxl.load_workbook(input_file, data_only=True)
+        _ws = _wb[config["sheet"]]
+        header_idx = config["header_row"]  # 1-based
+        data_idx   = config["data_row"]    # 1-based
+        headers = [_ws.cell(row=header_idx, column=c).value for c in range(1, _ws.max_column + 1)]
+        data_rows_raw = []
+        for r in range(data_idx, _ws.max_row + 1):
+            data_rows_raw.append([_ws.cell(row=r, column=c).value for c in range(1, _ws.max_column + 1)])
+        src_df = pd.DataFrame(data_rows_raw, columns=dedupe_columns(headers))
         src_df.reset_index(drop=True, inplace=True)
         if marketplace == "Amazon":
             parentage_col = find_column_by_name_like(src_df, "Parentage Level")
@@ -490,39 +493,6 @@ def process_file(
         )
     src_df = generate_style_group_id(src_df, marketplace)
 
-    # ── DEBUG: show styleGroupId generation details in UI ──────────
-    if marketplace in ("Amazon", "Flipkart", "Meesho"):
-        mapping = STYLE_GROUP_MAPPING.get(marketplace, {})
-        def _fef(df, name):
-            nname = norm(name)
-            for c in df.columns:
-                if str(c).strip() == name: return c
-            for c in df.columns:
-                if norm(str(c)) == nname: return c
-            for c in df.columns:
-                if norm(str(c)).startswith(nname): return c
-            return None
-        _parent_col = _fef(src_df, mapping.get("parent","")) if mapping else None
-        _color_col  = _fef(src_df, mapping.get("color",""))  if mapping else None
-        _price_col  = _fef(src_df, mapping.get("price",""))  if mapping else None
-        _image_col  = _fef(src_df, mapping.get("image",""))  if mapping else None
-        st.info(
-            f"🔍 **styleGroupId debug** — "
-            f"parent_col=`{_parent_col}` | color_col=`{_color_col}` | "
-            f"price_col=`{_price_col}` | image_col=`{_image_col}`"
-        )
-        if "styleGroupId" in src_df.columns:
-            sgi_vals = src_df["styleGroupId"].astype(str)
-            st.info(
-                f"styleGroupId: {(sgi_vals != '').sum()} rows filled | "
-                f"{sgi_vals.nunique()} unique values | "
-                f"sample: {sgi_vals.head(5).tolist()}"
-            )
-        # Show first 5 rows of key columns
-        _show_cols = [c for c in [_parent_col, _color_col, _price_col, _image_col, "styleGroupId"] if c and c in src_df.columns]
-        if _show_cols:
-            st.dataframe(src_df[_show_cols].head(10))
-    # ── END DEBUG ──────────────────────────────────────────────────
 
     # ── Claim BatchID FIRST (before any processing) ──────────────
     batch_id     = get_and_increment_batch_id()
