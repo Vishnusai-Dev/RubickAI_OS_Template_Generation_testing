@@ -203,10 +203,27 @@ def generate_style_group_id(df, marketplace):
     if not mapping:
         df["styleGroupId"] = ""
         return df
-    parent_col = find_column_by_name_like(df, mapping["parent"])
-    color_col  = find_column_by_name_like(df, mapping["color"])
-    price_col  = find_column_by_name_like(df, mapping["price"])
-    image_col  = find_column_by_name_like(df, mapping["image"])
+    def find_exact_or_fuzzy(df, name):
+        """Try exact norm match first, then starts-with, avoid ambiguous contains."""
+        nname = norm(name)
+        # 1. exact string match
+        for c in df.columns:
+            if str(c).strip() == name:
+                return c
+        # 2. exact norm match
+        for c in df.columns:
+            if norm(str(c)) == nname:
+                return c
+        # 3. starts-with norm (avoids false contains matches)
+        for c in df.columns:
+            if norm(str(c)).startswith(nname):
+                return c
+        return None
+
+    parent_col = find_exact_or_fuzzy(df, mapping["parent"])
+    color_col  = find_exact_or_fuzzy(df, mapping["color"])
+    price_col  = find_exact_or_fuzzy(df, mapping["price"])
+    image_col  = find_exact_or_fuzzy(df, mapping["image"])
     # If color/price/image missing, fall back to sequential IDs
     if not color_col or not price_col or not image_col:
         df["styleGroupId"] = [str(i + 1) for i in range(len(df))]
@@ -256,11 +273,14 @@ def generate_style_group_id(df, marketplace):
         price  = row[price_col]
         image  = row[image_col]
         if parent_counts.get(parent, 0) > 1:
-            # Parent has multiple rows (size variants) — key by parent+color+price
+            # Parent has multiple rows (variant group) — key by parent+color+price
             key = f"{parent}_{color}_{price}"
         else:
-            # Single row for this parent — skip
-            key = None
+            # No parent or unique parent — fall back to image+color+price
+            if image and str(image).strip() not in ("", "nan", "None"):
+                key = f"{image}_{color}_{price}"
+            else:
+                key = None
         style_keys.append(key)
     df["_style_key"] = style_keys
     valid_keys = df["_style_key"].dropna().unique()
