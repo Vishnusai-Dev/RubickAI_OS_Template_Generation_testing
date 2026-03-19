@@ -234,16 +234,13 @@ def generate_style_group_id(df, marketplace):
         df[color_col] = df[color_col].astype(str).str.strip().str.lower().str.replace(" ", "", regex=False)
         df[price_col] = pd.to_numeric(df[price_col], errors="coerce").fillna(0).astype(int).astype(str)
         df[image_col] = df[image_col].astype(str).str.strip()
-        style_keys = []
-        for _, row in df.iterrows():
-            color = row[color_col]
-            price = row[price_col]
-            image = row[image_col]
-            if image and image not in ("", "nan", "None"):
-                style_keys.append(f"{image}_{color}_{price}")
-            else:
-                style_keys.append(None)
-        df["_style_key"] = style_keys
+        image_valid   = ~df[image_col].isin(["", "nan", "None"])
+        df["_style_key"] = None
+        df.loc[image_valid, "_style_key"] = (
+            df.loc[image_valid, image_col] + "_" +
+            df.loc[image_valid, color_col] + "_" +
+            df.loc[image_valid, price_col]
+        )
         valid_keys = df["_style_key"].dropna().unique()
         key_map = {k: i + 1 for i, k in enumerate(valid_keys)}
         df["styleGroupId"] = df["_style_key"].map(key_map).fillna("").astype(str)
@@ -266,26 +263,25 @@ def generate_style_group_id(df, marketplace):
         df["styleGroupId"] = [str(i + 1) for i in range(len(df))]
         return df
 
-    style_keys = []
-    _debug_lines = [f"image_col='{image_col}' color_col='{color_col}' price_col='{price_col}' parent_col='{parent_col}'"]
-    for idx, (_, row) in enumerate(df.iterrows()):
-        parent = row[parent_col]
-        color  = row[color_col]
-        price  = row[price_col]
-        image  = row[image_col]
-        if parent_counts.get(parent, 0) > 1:
-            key = f"{parent}_{color}_{price}"
-        else:
-            if image and str(image).strip() not in ("", "nan", "None"):
-                key = f"{image}_{color}_{price}"
-            else:
-                key = None
-        style_keys.append(key)
-        if idx < 50:
-            _debug_lines.append(f"row{idx}: img='{str(image)[-20:]}' color='{color}' price='{price}' key='{str(key)[-25:] if key else None}'")
-    import streamlit as _st
-    _st.text("\n".join(_debug_lines))
-    df["_style_key"] = style_keys
+    # Build keys using vectorized operations to avoid iterrows() stale-copy issue
+    parent_count_series = df[parent_col].map(parent_counts).fillna(0)
+    has_multi_parent    = parent_count_series > 1
+    image_valid         = df[image_col].str.strip().isin(["", "nan", "None"]) == False
+
+    df["_style_key"] = None
+    # Rows with multiple-occurrence parent: key = parent+color+price
+    df.loc[has_multi_parent, "_style_key"] = (
+        df.loc[has_multi_parent, parent_col] + "_" +
+        df.loc[has_multi_parent, color_col]  + "_" +
+        df.loc[has_multi_parent, price_col]
+    )
+    # Rows with unique/no parent + valid image: key = image+color+price
+    solo_with_img = (~has_multi_parent) & image_valid
+    df.loc[solo_with_img, "_style_key"] = (
+        df.loc[solo_with_img, image_col] + "_" +
+        df.loc[solo_with_img, color_col] + "_" +
+        df.loc[solo_with_img, price_col]
+    )
     valid_keys = df["_style_key"].dropna().unique()
     key_map = {k: i + 1 for i, k in enumerate(valid_keys)}
     df["styleGroupId"] = df["_style_key"].map(key_map).fillna("").astype(str)
