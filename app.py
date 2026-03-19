@@ -267,21 +267,24 @@ def generate_style_group_id(df, marketplace):
         return df
 
     style_keys = []
-    for _, row in df.iterrows():
+    _debug_lines = [f"image_col='{image_col}' color_col='{color_col}' price_col='{price_col}' parent_col='{parent_col}'"]
+    for idx, (_, row) in enumerate(df.iterrows()):
         parent = row[parent_col]
         color  = row[color_col]
         price  = row[price_col]
         image  = row[image_col]
         if parent_counts.get(parent, 0) > 1:
-            # Parent has multiple rows (variant group) — key by parent+color+price
             key = f"{parent}_{color}_{price}"
         else:
-            # No parent or unique parent — fall back to image+color+price
             if image and str(image).strip() not in ("", "nan", "None"):
                 key = f"{image}_{color}_{price}"
             else:
                 key = None
         style_keys.append(key)
+        if idx < 50:
+            _debug_lines.append(f"row{idx}: img='{str(image)[-20:]}' color='{color}' price='{price}' key='{str(key)[-25:] if key else None}'")
+    import streamlit as _st
+    _st.text("\n".join(_debug_lines))
     df["_style_key"] = style_keys
     valid_keys = df["_style_key"].dropna().unique()
     key_map = {k: i + 1 for i, k in enumerate(valid_keys)}
@@ -657,16 +660,7 @@ def process_file(
             var_series  = src_df[var_col].fillna("").astype(str)  if var_col  else None
             append_id_columns(var_series, prod_series)
 
-    # ── styleGroupId debug ───────────────────────────────────────
-    if "styleGroupId" in src_df.columns:
-        _sgi = src_df["styleGroupId"].astype(str)
-        _sku = src_df.get("SKU", pd.Series(range(len(src_df)))).astype(str)
-        _img = src_df.get("Main Image URL", pd.Series(["?"]*len(src_df))).astype(str)
-        debug_rows = []
-        for i in range(len(src_df)):
-            debug_rows.append(f"row{i}: sku={str(_sku.iloc[i])[:20]} | img_tail={str(_img.iloc[i])[-15:]} | sgi={_sgi.iloc[i]}")
-        st.text("\n".join(debug_rows[:50]))
-    # ────────────────────────────────────────────────────────────
+
 
     # ── styleGroupId column — only if at least one non-empty value ──
     sgi_series = src_df["styleGroupId"].astype(str).str.strip() if "styleGroupId" in src_df.columns else None
