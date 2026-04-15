@@ -796,7 +796,7 @@ if bulk_mode:
                     try:
                         # Use first sheet for bulk general mode
                         xl = pd.ExcelFile(f)
-                        first_sheet = xl.sheet_names[0]
+                        first_sheet = xl.sheet_names[1] if len(xl.sheet_names) > 1 else xl.sheet_names[0]
                         buf, bid = process_file(
                             f, "General",
                             general_header_row=general_header_row,
