@@ -4,6 +4,7 @@ import openpyxl
 import re
 import requests
 import os
+import zipfile
 from io import BytesIO
 
 # ───────────────────────── FILE PATHS ─────────────────────────
@@ -15,62 +16,14 @@ if os.path.exists(FALLBACK_UPLOADED_TEMPLATE):
 else:
     TEMPLATE_PATH = DEFAULT_TEMPLATE
 
-# ═══════════════════════════════════════════════════════════════
-#  BATCH ID  —  Stored in Google Sheets, shared across all users
-#
-#  HOW IT WORKS:
-#    A Google Apps Script Web App acts as a tiny API sitting in
-#    front of your sheet. It handles GET (read) and POST (write).
-#    Because it's deployed as "Anyone, even anonymous" it needs
-#    zero credentials — just an HTTP call.
-#
-#  ONE-TIME SETUP (~3 minutes):
-#  ─────────────────────────────
-#  1. Open your Google Sheet:
-#     https://docs.google.com/spreadsheets/d/1oxtgaZmfJseMoiOlqGRkm2pWSQoga5Ys-jcDZGTUFEM
-#  2. Put the number  1  in cell A1  (this is your starting BatchID)
-#  3. Click  Extensions → Apps Script
-#  4. Delete any existing code and paste this ENTIRE script:
-#
-# ┌──────────────────────────────────────────────────────────────
-# │ var SHEET_ID = "1oxtgaZmfJseMoiOlqGRkm2pWSQoga5Ys-jcDZGTUFEM";
-# │
-# │ function doGet(e) {
-# │   var sheet = SpreadsheetApp.openById(SHEET_ID).getSheets()[0];
-# │   var val = sheet.getRange("A1").getValue();
-# │   return ContentService
-# │     .createTextOutput(JSON.stringify({ batch_id: val }))
-# │     .setMimeType(ContentService.MimeType.JSON);
-# │ }
-# │
-# │ function doPost(e) {
-# │   var data  = JSON.parse(e.postData.contents);
-# │   var sheet = SpreadsheetApp.openById(SHEET_ID).getSheets()[0];
-# │   sheet.getRange("A1").setValue(data.next_id);
-# │   return ContentService
-# │     .createTextOutput(JSON.stringify({ ok: true, saved: data.next_id }))
-# │     .setMimeType(ContentService.MimeType.JSON);
-# │ }
-# └──────────────────────────────────────────────────────────────
-#
-#  5. Click  Deploy → New deployment
-#     • Type: Web app
-#     • Execute as: Me
-#     • Who has access: Anyone
-#  6. Click Deploy → copy the Web App URL
-#  7. Paste that URL as the value of  APPS_SCRIPT_URL  below
-# ═══════════════════════════════════════════════════════════════
-
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxiCe1IVsghaaFa4zJvA-YuCowvvT3JzLZag1IAp9B8MFGk6w8hI4aBpoB_WsqWkbbLPg/exec"
 
-# ── Optionally load from Streamlit secrets (for cloud deployments) ──
 try:
     if not APPS_SCRIPT_URL:
         APPS_SCRIPT_URL = st.secrets["APPS_SCRIPT_URL"]
 except Exception:
     pass
 
-# ── Local file fallback (single machine, used if URL not set) ──
 _FALLBACK_FILE = "batch_id_counter.json"
 
 def _local_read() -> int:
@@ -90,7 +43,6 @@ def _local_write(v: int):
         json.dump({"v": v}, f)
     os.replace(tmp, _FALLBACK_FILE)
 
-# ── Google Sheets read / write via Apps Script ─────────────────
 def _remote_read() -> int:
     r = requests.get(APPS_SCRIPT_URL, timeout=10)
     r.raise_for_status()
@@ -100,9 +52,7 @@ def _remote_write(next_id: int):
     r = requests.post(APPS_SCRIPT_URL, json={"next_id": next_id}, timeout=10)
     r.raise_for_status()
 
-# ── Public helpers ─────────────────────────────────────────────
 def peek_next_batch_id() -> int:
-    """Read current BatchID without consuming it (for UI display)."""
     if APPS_SCRIPT_URL:
         try:
             return _remote_read()
@@ -111,18 +61,13 @@ def peek_next_batch_id() -> int:
     return _local_read()
 
 def get_and_increment_batch_id() -> int:
-    """
-    Atomically claim the current BatchID and advance the counter.
-    Returns the claimed BatchID.
-    """
     if APPS_SCRIPT_URL:
         try:
             current = _remote_read()
             _remote_write(current + 1)
             return current
-        except Exception as e:
-            pass  # Silently fall back to local counter if Google Sheets is unavailable
-    # Fallback
+        except Exception:
+            pass
     current = _local_read()
     _local_write(current + 1)
     return current
@@ -176,7 +121,6 @@ MARKETPLACE_ID_MAP = {
     "Meesho":   ("Product ID / Style ID", "SKU ID"),
 }
 
-# ───────────────── STYLE GROUP ID GENERATION ─────────────────
 STYLE_GROUP_MAPPING = {
     "Amazon": {
         "parent": "Parent SKU",
@@ -204,17 +148,13 @@ def generate_style_group_id(df, marketplace):
         df["styleGroupId"] = ""
         return df
     def find_exact_or_fuzzy(df, name):
-        """Try exact norm match first, then starts-with, avoid ambiguous contains."""
         nname = norm(name)
-        # 1. exact string match
         for c in df.columns:
             if str(c).strip() == name:
                 return c
-        # 2. exact norm match
         for c in df.columns:
             if norm(str(c)) == nname:
                 return c
-        # 3. starts-with norm (avoids false contains matches)
         for c in df.columns:
             if norm(str(c)).startswith(nname):
                 return c
@@ -224,12 +164,10 @@ def generate_style_group_id(df, marketplace):
     color_col  = find_exact_or_fuzzy(df, mapping["color"])
     price_col  = find_exact_or_fuzzy(df, mapping["price"])
     image_col  = find_exact_or_fuzzy(df, mapping["image"])
-    # If color/price/image missing, fall back to sequential IDs
     if not color_col or not price_col or not image_col:
         df["styleGroupId"] = [str(i + 1) for i in range(len(df))]
         return df
 
-    # If parent_col not found, group by image + color + price
     if not parent_col:
         df[color_col] = df[color_col].astype(str).str.strip().str.lower().str.replace(" ", "", regex=False)
         df[price_col] = pd.to_numeric(df[price_col], errors="coerce").fillna(0).astype(int).astype(str)
@@ -247,7 +185,7 @@ def generate_style_group_id(df, marketplace):
         df["styleGroupId"] = df["_style_key"].map(key_map).fillna("").astype(str)
         df.drop(columns=["_style_key"], inplace=True)
         return df
-    # Convert ALL key columns to string FIRST before any operations
+
     df[parent_col] = df[parent_col].astype(str).str.strip()
     df[color_col]  = (
         df[color_col].astype(str).str.strip().str.lower()
@@ -258,19 +196,14 @@ def generate_style_group_id(df, marketplace):
         .fillna(0).astype(int).astype(str)
     )
     df[image_col]  = df[image_col].astype(str).str.strip()
-    # Exclude null-like values from parent counts so they don't get grouped
     _NULL_PARENT_VALS = {"", "none", "nan", "null", "n/a"}
     parent_counts  = df[parent_col][~df[parent_col].str.lower().isin(_NULL_PARENT_VALS)].value_counts()
 
-    # If no parent has more than 1 row, assign sequential IDs (1, 2, 3...)
     if not any(v > 1 for v in parent_counts.values):
         df["styleGroupId"] = [str(i + 1) for i in range(len(df))]
         return df
 
-    # Build style keys using apply (safe across all pandas versions)
     parent_count_map = parent_counts.to_dict()
-
-    # Exclude null-like parent values from grouping
     _NULL_PARENTS = {"", "none", "nan", "null", "n/a"}
 
     def _make_key(row):
@@ -278,7 +211,6 @@ def generate_style_group_id(df, marketplace):
         color  = row[color_col]
         price  = row[price_col]
         image  = row[image_col]
-        # Only group by parent if it's a real non-null parent with multiple rows
         parent_is_valid = str(parent).strip().lower() not in _NULL_PARENTS
         if parent_is_valid and parent_count_map.get(parent, 0) > 1:
             return f"{parent}_{color}_{price}"
@@ -332,11 +264,10 @@ def read_input_to_df(input_file, marketplace, header_row=1, data_row=2, sheet_na
         src_df.reset_index(drop=True, inplace=True)
 
     elif config["sheet"] is not None:
-        # Use openpyxl to avoid pandas/xlrd truncating URLs with special chars like +
         _wb = openpyxl.load_workbook(input_file, data_only=True)
         _ws = _wb[config["sheet"]]
-        header_idx = config["header_row"]  # 1-based
-        data_idx   = config["data_row"]    # 1-based
+        header_idx = config["header_row"]
+        data_idx   = config["data_row"]
         headers = [_ws.cell(row=header_idx, column=c).value for c in range(1, _ws.max_column + 1)]
         data_rows_raw = []
         for r in range(data_idx, _ws.max_row + 1):
@@ -355,17 +286,12 @@ def read_input_to_df(input_file, marketplace, header_row=1, data_row=2, sheet_na
                 src_df.attrs["filtered_parent_rows"] = before - after
     else:
         if marketplace == "Meesho":
-            # Meesho files have merged cells that confuse pandas row count.
-            # Use openpyxl directly to read all rows reliably.
             import openpyxl as _oxl
-            from io import BytesIO as _BytesIO
             _wb = _oxl.load_workbook(input_file if not hasattr(input_file, "read") else input_file, data_only=True)
             _ws = _wb.worksheets[config["sheet_index"]]
-            header_idx = config["header_row"]       # 1-based row number
-            data_idx   = config["data_row"]         # 1-based row number
-            # Read header row
+            header_idx = config["header_row"]
+            data_idx   = config["data_row"]
             headers = [_ws.cell(row=header_idx, column=c).value for c in range(1, _ws.max_column + 1)]
-            # Read data rows
             data_rows = []
             for r in range(data_idx, _ws.max_row + 1):
                 row_vals = [_ws.cell(row=r, column=c).value for c in range(1, _ws.max_column + 1)]
@@ -386,19 +312,10 @@ def read_input_to_df(input_file, marketplace, header_row=1, data_row=2, sheet_na
     return src_df
 
 
-
-# ───────────────── FLIPKART FILE MERGE ─────────────────────────
 FLIPKART_JOIN_COL = "Flipkart Serial Number"
 
 def merge_flipkart_files(catalog_file=None, listing_file=None):
-    """
-    Read Catalog (sheet index 3, header 1, data 5) and/or
-    Listing (sheet index 1, header 1, data 3), join on
-    'Flipkart Serial Number' (left join on Catalog), drop exact
-    duplicate columns, return merged DataFrame.
-    """
     def read_sheet(f, sheet_index, header_row, data_row):
-        """Read sheet with exact header and data row numbers (1-indexed)."""
         xl = pd.ExcelFile(f)
         temp = xl.parse(xl.sheet_names[sheet_index], header=None)
         headers = temp.iloc[header_row - 1].tolist()
@@ -412,26 +329,19 @@ def merge_flipkart_files(catalog_file=None, listing_file=None):
     lst_df = None
 
     if catalog_file is not None:
-        # Catalog: sheet index 2 (3rd tab), header row 1, data row 5 (rows 2-4 are junk)
         cat_df = read_sheet(catalog_file, sheet_index=2, header_row=1, data_row=5)
-
     if listing_file is not None:
-        # Listing: sheet index 0 (1st tab), header row 1, data row 3 (row 2 is junk)
         lst_df = read_sheet(listing_file, sheet_index=0, header_row=1, data_row=3)
 
-    # Only one file uploaded — return it as-is
     if cat_df is None:
         return lst_df
     if lst_df is None:
         return cat_df
 
-    # Find join column in both — try exact, then partial fallbacks
     def find_serial_col(df):
-        # Try exact match first
         col = find_column_by_name_like(df, FLIPKART_JOIN_COL)
         if col:
             return col
-        # Try any column containing "serial"
         for c in df.columns:
             if "serial" in norm(str(c)):
                 return c
@@ -441,22 +351,11 @@ def merge_flipkart_files(catalog_file=None, listing_file=None):
     lst_join = find_serial_col(lst_df)
 
     if not cat_join or not lst_join:
-        debug_lines = []
-        if not cat_join:
-            debug_lines.append(f"**Catalog** (sheet 3) — all columns found: `{list(cat_df.columns)}`")
-        if not lst_join:
-            debug_lines.append(f"**Listing** (sheet 1) — all columns found: `{list(lst_df.columns)}`")
-        st.error("❌ Could not find 'Flipkart Serial Number' in one or both files. See column names below:")
-        for line in debug_lines:
-            st.markdown(line)
         return cat_df
 
-    # Normalise join key
     cat_df[cat_join] = cat_df[cat_join].astype(str).str.strip()
     lst_df[lst_join] = lst_df[lst_join].astype(str).str.strip()
 
-    # Drop columns from listing that already exist in catalog.
-    # Compare using norm() to catch case/space differences and dedupe suffixes.
     cat_norms = set(norm(str(c)) for c in cat_df.columns)
     lst_cols_to_keep = [lst_join] + [
         c for c in lst_df.columns
@@ -469,7 +368,6 @@ def merge_flipkart_files(catalog_file=None, listing_file=None):
         left_on=cat_join, right_on=lst_join,
         how="left"
     )
-    # Drop duplicate join key column if names differ
     if cat_join != lst_join and lst_join in merged.columns:
         merged.drop(columns=[lst_join], inplace=True)
 
@@ -479,11 +377,11 @@ def merge_flipkart_files(catalog_file=None, listing_file=None):
 def process_file(
     input_file,
     marketplace: str,
-    selected_variant_col: str | None = None,
-    selected_product_col: str | None = None,
+    selected_variant_col=None,
+    selected_product_col=None,
     general_header_row: int = 1,
     general_data_row: int = 2,
-    general_sheet_name: str | None = None,
+    general_sheet_name=None,
     premerged_df=None,
 ):
     if premerged_df is not None:
@@ -497,20 +395,15 @@ def process_file(
         )
     src_df = generate_style_group_id(src_df, marketplace)
 
-
-    # ── Claim BatchID FIRST (before any processing) ──────────────
     batch_id     = get_and_increment_batch_id()
     batch_id_str = str(batch_id)
     num_rows     = len(src_df)
 
-    # auto-map every column (skip generated columns handled separately)
     _SKIP_COLS = {"styleGroupId"}
     columns_meta = []
     for col in src_df.columns:
         if str(col) in _SKIP_COLS:
             continue
-        # Meesho: column headers are in format "\n\nField Name\n\nDescription\n"
-        # Split by newline, take first non-empty part as the field name
         if marketplace == "Meesho":
             raw = str(col)
             parts = [p.strip() for p in raw.split("\n") if p.strip()]
@@ -518,18 +411,14 @@ def process_file(
         else:
             display_col = col
         dtype = "imageurlarray" if is_image_column(norm(col), src_df[col]) else "string"
-        # Flipkart: rename "Brand" to "Brand Name"
-        # Meesho: column header is long text starting with "Brand Name" — normalise to clean label
         out_col = col
         if marketplace == "Flipkart" and str(col).strip() == "Brand":
             out_col = "Brand Name"
         elif marketplace == "Meesho" and norm(col).startswith("brandname"):
             out_col = "Brand Name"
-        # Use display_col as base for out, unless already renamed (e.g. Brand)
         final_out = out_col if out_col != col else display_col
         columns_meta.append({"src": col, "out": final_out, "row3": "mandatory", "row4": dtype})
 
-    # identify color/size
     color_cols = [col for col in src_df.columns if "color" in norm(col) or "colour" in norm(col)]
     size_cols  = [col for col in src_df.columns if "size" in norm(col)]
 
@@ -545,7 +434,6 @@ def process_file(
     unique_opt1 = option1_data.replace("", pd.NA).dropna().unique().tolist()
     unique_opt2 = option2_data.replace("", pd.NA).dropna().unique().tolist()
 
-    # load workbook
     wb = openpyxl.load_workbook(TEMPLATE_PATH)
     ws_vals  = wb["Values"]
     ws_types = wb["Types"]
@@ -564,7 +452,6 @@ def process_file(
     vals_start_col  = first_empty_col(ws_vals,  header_rows=(1,))
     types_start_col = first_empty_col(ws_types, header_rows=(1, 2, 3, 4))
 
-    # Write columns_meta
     for idx, meta in enumerate(columns_meta):
         vcol = vals_start_col  + idx
         tcol = types_start_col + idx
@@ -585,7 +472,6 @@ def process_file(
         ws_types.cell(row=3, column=tcol, value=meta["row3"])
         ws_types.cell(row=4, column=tcol, value=meta["row4"])
 
-    # Append Option1 & Option2
     opt1_vcol = vals_start_col  + len(columns_meta)
     opt2_vcol = opt1_vcol + 1
     ws_vals.cell(row=1, column=opt1_vcol, value="Option 1")
@@ -610,7 +496,6 @@ def process_file(
     for i, val in enumerate(unique_opt2, start=5):
         ws_types.cell(row=i, column=opt2_tcol, value=val)
 
-    # Append variantId & productId
     def append_id_columns(variant_series, product_series):
         has_var  = variant_series is not None and variant_series.replace("", pd.NA).dropna().shape[0] > 0
         has_prod = product_series is not None and product_series.replace("", pd.NA).dropna().shape[0] > 0
@@ -661,9 +546,6 @@ def process_file(
             var_series  = src_df[var_col].fillna("").astype(str)  if var_col  else None
             append_id_columns(var_series, prod_series)
 
-
-
-    # ── styleGroupId column — only if at least one non-empty value ──
     sgi_series = src_df["styleGroupId"].astype(str).str.strip() if "styleGroupId" in src_df.columns else None
     if sgi_series is not None and sgi_series.replace("", pd.NA).dropna().shape[0] > 0:
         sgi_vcol = first_empty_col(ws_vals, header_rows=(1,))
@@ -676,11 +558,7 @@ def process_file(
         ws_types.cell(row=2, column=sgi_tcol, value="styleGroupId")
         ws_types.cell(row=3, column=sgi_tcol, value="non mandatory")
         ws_types.cell(row=4, column=sgi_tcol, value="string")
-    # ─────────────────────────────────────────────────────────────
 
-    # ── BatchID column — only for rows that have actual data ────────
-    # A row is considered "has data" if at least one cell in that row
-    # (across all src_df columns) is non-null and non-empty string.
     has_data_mask = src_df.apply(
         lambda row: any(
             str(v).strip() not in ("", "nan", "None")
@@ -693,7 +571,7 @@ def process_file(
     ws_vals.cell(row=1, column=bv_col, value="BatchID")
     for df_idx, has_data in enumerate(has_data_mask):
         if has_data:
-            r = df_idx + 2  # +2 because row 1 is header, df is 0-indexed
+            r = df_idx + 2
             cell = ws_vals.cell(row=r, column=bv_col, value=batch_id_str)
             cell.number_format = "@"
 
@@ -702,7 +580,6 @@ def process_file(
     ws_types.cell(row=2, column=bt_col, value="BatchID")
     ws_types.cell(row=3, column=bt_col, value="non mandatory")
     ws_types.cell(row=4, column=bt_col, value="string")
-    # ─────────────────────────────────────────────────────────────
 
     buf = BytesIO()
     wb.save(buf)
@@ -710,11 +587,27 @@ def process_file(
     return buf, batch_id
 
 
+def get_output_filename(input_name: str, batch_id: int) -> str:
+    """Generate output filename: Output_<original_name_without_ext>_batch<id>.xlsx"""
+    base = os.path.splitext(input_name)[0]
+    return f"Output_{base}_batch{batch_id}.xlsx"
+
+
+def build_zip(file_buffers: list) -> BytesIO:
+    """Pack list of (filename, BytesIO) into a ZIP buffer."""
+    zip_buf = BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fname, buf in file_buffers:
+            buf.seek(0)
+            zf.writestr(fname, buf.read())
+    zip_buf.seek(0)
+    return zip_buf
+
+
 # ───────────────────────── STREAMLIT UI ─────────────────────────
 st.set_page_config(page_title="SKU Template Automation", layout="wide")
 st.title("Rubick OS Template Conversion")
 
-# Warn if Apps Script URL not configured
 if not APPS_SCRIPT_URL:
     st.warning(
         "⚠️ **BatchID Google Sheets sync not configured.**  \n"
@@ -723,7 +616,6 @@ if not APPS_SCRIPT_URL:
         "Until then, BatchID falls back to a local file counter."
     )
 
-# Show next BatchID (read-only peek)
 next_id = peek_next_batch_id()
 st.info(f"📦 Next BatchID to be assigned: **{next_id}**")
 
@@ -743,8 +635,16 @@ if os.path.exists(TEMPLATE_PATH):
 marketplace_options = ["General", "Amazon", "Flipkart", "Myntra", "Ajio", "TataCliq", "Zivame", "Celio", "Meesho"]
 marketplace_type = st.selectbox("Select Template Type", marketplace_options)
 
+# ── Bulk mode toggle ───────────────────────────────────────────
+bulk_mode = st.toggle(
+    "📦 Bulk Upload Mode",
+    value=False,
+    help="Upload multiple files at once. All outputs will be bundled into a single ZIP download."
+)
+
 general_header_row = 1
 general_data_row   = 2
+
 if marketplace_type == "General":
     st.info("Callout: Leave blank to use defaults — Header row = 1, Data row = 2.")
     col_h, col_d = st.columns(2)
@@ -763,130 +663,344 @@ if marketplace_type == "General":
         st.error("Data row must be a number.")
         general_data_row = 2
 
-# ── Flipkart: dual file uploaders ─────────────────────────────
-flipkart_catalog_file = None
-flipkart_listing_file = None
+# ══════════════════════════════════════════════════════════════
+#  BULK MODE
+# ══════════════════════════════════════════════════════════════
+if bulk_mode:
+    st.markdown("---")
+    st.subheader("📦 Bulk Upload")
 
-if marketplace_type == "Flipkart":
-    st.info("📂 Upload one or both Flipkart files. At least one is required.")
-    col_cat, col_lst = st.columns(2)
-    with col_cat:
-        flipkart_catalog_file = st.file_uploader("Catalog File", type=["xlsx", "xls", "xlsm"], key="fk_catalog")
-    with col_lst:
-        flipkart_listing_file = st.file_uploader("Listing File", type=["xlsx", "xls", "xlsm"], key="fk_listing")
-    input_file = flipkart_catalog_file or flipkart_listing_file  # at least one needed
-else:
-    input_file = st.file_uploader("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])
+    if marketplace_type == "Flipkart":
+        st.info(
+            "For Flipkart bulk mode: upload all **Catalog** files together and all **Listing** files together. "
+            "Files are paired by matching name prefix (e.g. `brand_catalog.xlsx` ↔ `brand_listing.xlsx`). "
+            "Unmatched files are processed solo."
+        )
+        col_cat, col_lst = st.columns(2)
+        with col_cat:
+            bulk_catalog_files = st.file_uploader(
+                "Catalog Files", type=["xlsx", "xls", "xlsm"],
+                accept_multiple_files=True, key="bulk_fk_catalog"
+            )
+        with col_lst:
+            bulk_listing_files = st.file_uploader(
+                "Listing Files", type=["xlsx", "xls", "xlsm"],
+                accept_multiple_files=True, key="bulk_fk_listing"
+            )
+        all_bulk_files = bulk_catalog_files or []
+        has_files = bool(bulk_catalog_files or bulk_listing_files)
+    else:
+        bulk_files = st.file_uploader(
+            f"Upload Multiple Files ({marketplace_type})",
+            type=["xlsx", "xls", "xlsm"],
+            accept_multiple_files=True,
+            key="bulk_files"
+        )
+        has_files = bool(bulk_files)
 
-selected_variant_col = "(none)"
-selected_product_col = "(none)"
+    if has_files:
+        st.markdown(f"**Files ready to process:**")
 
-if input_file:
-    selected_sheet = None
-    if marketplace_type == "General":
-        try:
-            xl     = pd.ExcelFile(input_file)
-            sheets = xl.sheet_names
-            selected_sheet = st.selectbox("Select sheet", sheets)
-        except Exception as e:
-            st.error(f"Failed to read sheets from uploaded file: {e}")
-            selected_sheet = None
-
-    try:
         if marketplace_type == "Flipkart":
-            src_df = merge_flipkart_files(
-                catalog_file=flipkart_catalog_file,
-                listing_file=flipkart_listing_file
-            )
-        else:
-            src_df = read_input_to_df(
-                input_file, marketplace_type,
-                header_row=general_header_row,
-                data_row=general_data_row,
-                sheet_name=selected_sheet
-            )
-    except Exception as e:
-        st.error(f"Failed to parse uploaded file: {e}")
-        src_df = None
+            # Build pairs: match catalog ↔ listing by stem similarity
+            def stem(f):
+                return os.path.splitext(f.name)[0].lower()
 
-    if src_df is not None:
-        if marketplace_type == "General":
-            st.markdown("**Sample data (first 3 rows)**")
-            st.dataframe(src_df.head(3))
-            cols = ["(none)"] + [str(c) for c in src_df.columns]
-            col1, col2 = st.columns(2)
-            with col1:
-                selected_variant_col = st.selectbox("Style Code → productId (leave '(none)' to skip)", options=cols, index=0)
-            with col2:
-                selected_product_col = st.selectbox("Seller SKU → variantId (leave '(none)' to skip)", options=cols, index=0)
-        else:
-            if marketplace_type == "Amazon":
-                filtered = src_df.attrs.get("filtered_parent_rows", 0)
-                if filtered:
-                    st.info(f"ℹ️ {filtered} Parent row(s) removed (Parentage Level = 'Parent')")
-            st.subheader("Preview (first 5 rows)")
-            try:
-                st.dataframe(src_df.head(5))
-            except Exception as e:
-                st.warning(f"Could not render preview: {e}")
-                st.write(src_df.head(5).to_string())
+            listing_map = {stem(f): f for f in (bulk_listing_files or [])}
+            pairs = []
+            unmatched_catalogs = []
+            for cf in (bulk_catalog_files or []):
+                cf_stem = stem(cf)
+                # Try to find a listing whose stem shares most characters
+                matched = None
+                for ls, lf in listing_map.items():
+                    # simple check: one stem is a substring of the other, or they share >60% chars
+                    if ls in cf_stem or cf_stem in ls:
+                        matched = lf
+                        break
+                if matched:
+                    pairs.append((cf, matched))
+                    listing_map.pop(stem(matched), None)
+                else:
+                    unmatched_catalogs.append((cf, None))
 
+            # Remaining unmatched listings
+            unmatched_listings = [(None, lf) for lf in listing_map.values()]
+            all_pairs = pairs + unmatched_catalogs + unmatched_listings
+
+            for cf, lf in all_pairs:
+                cat_name = cf.name if cf else "—"
+                lst_name = lf.name if lf else "—"
+                st.write(f"• Catalog: `{cat_name}` ↔ Listing: `{lst_name}`")
+
+            if st.button("🚀 Process All & Download ZIP", key="bulk_fk_go"):
+                results = []
+                errors = []
+                progress = st.progress(0)
+                status_text = st.empty()
+
+                for i, (cf, lf) in enumerate(all_pairs):
+                    label = (cf or lf).name
+                    status_text.text(f"Processing {i+1}/{len(all_pairs)}: {label}…")
+                    try:
+                        merged = merge_flipkart_files(catalog_file=cf, listing_file=lf)
+                        buf, bid = process_file(
+                            cf or lf, "Flipkart",
+                            premerged_df=merged
+                        )
+                        out_name = get_output_filename(label, bid)
+                        results.append((out_name, buf))
+                    except Exception as e:
+                        errors.append(f"`{label}`: {e}")
+                    progress.progress((i + 1) / len(all_pairs))
+
+                status_text.empty()
+                progress.empty()
+
+                if results:
+                    first_bid = int(results[0][0].split("batch")[1].replace(".xlsx", ""))
+                    last_bid  = int(results[-1][0].split("batch")[1].replace(".xlsx", ""))
+                    zip_buf = build_zip(results)
+                    st.success(f"✅ {len(results)} file(s) processed! BatchIDs {first_bid}–{last_bid}")
+                    st.download_button(
+                        f"📥 Download ZIP ({len(results)} files)",
+                        data=zip_buf,
+                        file_name=f"bulk_outputs_batch{first_bid}_to_{last_bid}.zip",
+                        mime="application/zip",
+                        key="bulk_fk_download"
+                    )
+                if errors:
+                    st.error("Some files failed:")
+                    for e in errors:
+                        st.markdown(f"- {e}")
+
+        elif marketplace_type == "General":
+            # For General bulk: use same header/data row settings for all files
+            # Show file list
+            for f in bulk_files:
+                st.write(f"• `{f.name}`")
+
+            st.info(
+                "💡 In bulk General mode, all files use the same header row, data row, "
+                "and the **first sheet** by default. variantId/productId column selection is skipped."
+            )
+
+            if st.button("🚀 Process All & Download ZIP", key="bulk_gen_go"):
+                results = []
+                errors = []
+                progress = st.progress(0)
+                status_text = st.empty()
+
+                for i, f in enumerate(bulk_files):
+                    status_text.text(f"Processing {i+1}/{len(bulk_files)}: {f.name}…")
+                    try:
+                        # Use first sheet for bulk general mode
+                        xl = pd.ExcelFile(f)
+                        first_sheet = xl.sheet_names[0]
+                        buf, bid = process_file(
+                            f, "General",
+                            general_header_row=general_header_row,
+                            general_data_row=general_data_row,
+                            general_sheet_name=first_sheet,
+                        )
+                        out_name = get_output_filename(f.name, bid)
+                        results.append((out_name, buf))
+                    except Exception as e:
+                        errors.append(f"`{f.name}`: {e}")
+                    progress.progress((i + 1) / len(bulk_files))
+
+                status_text.empty()
+                progress.empty()
+
+                if results:
+                    first_bid = int(results[0][0].split("batch")[1].replace(".xlsx", ""))
+                    last_bid  = int(results[-1][0].split("batch")[1].replace(".xlsx", ""))
+                    zip_buf = build_zip(results)
+                    st.success(f"✅ {len(results)} file(s) processed! BatchIDs {first_bid}–{last_bid}")
+                    st.download_button(
+                        f"📥 Download ZIP ({len(results)} files)",
+                        data=zip_buf,
+                        file_name=f"bulk_outputs_batch{first_bid}_to_{last_bid}.zip",
+                        mime="application/zip",
+                        key="bulk_gen_download"
+                    )
+                if errors:
+                    st.error("Some files failed:")
+                    for e in errors:
+                        st.markdown(f"- {e}")
+
+        else:
+            # All other marketplaces: straightforward multi-file upload
+            for f in bulk_files:
+                st.write(f"• `{f.name}`")
+
+            if st.button("🚀 Process All & Download ZIP", key="bulk_go"):
+                results = []
+                errors = []
+                progress = st.progress(0)
+                status_text = st.empty()
+
+                for i, f in enumerate(bulk_files):
+                    status_text.text(f"Processing {i+1}/{len(bulk_files)}: {f.name}…")
+                    try:
+                        buf, bid = process_file(f, marketplace_type)
+                        out_name = get_output_filename(f.name, bid)
+                        results.append((out_name, buf))
+                    except Exception as e:
+                        errors.append(f"`{f.name}`: {e}")
+                    progress.progress((i + 1) / len(bulk_files))
+
+                status_text.empty()
+                progress.empty()
+
+                if results:
+                    first_bid = int(results[0][0].split("batch")[1].replace(".xlsx", ""))
+                    last_bid  = int(results[-1][0].split("batch")[1].replace(".xlsx", ""))
+                    zip_buf = build_zip(results)
+                    st.success(f"✅ {len(results)} file(s) processed! BatchIDs {first_bid}–{last_bid}")
+                    st.download_button(
+                        f"📥 Download ZIP ({len(results)} files)",
+                        data=zip_buf,
+                        file_name=f"bulk_outputs_batch{first_bid}_to_{last_bid}.zip",
+                        mime="application/zip",
+                        key="bulk_download"
+                    )
+                if errors:
+                    st.error("Some files failed:")
+                    for e in errors:
+                        st.markdown(f"- {e}")
+
+# ══════════════════════════════════════════════════════════════
+#  SINGLE FILE MODE (original behaviour)
+# ══════════════════════════════════════════════════════════════
+else:
     st.markdown("---")
 
-    if marketplace_type == "General":
-        if st.button("Generate Output"):
+    flipkart_catalog_file = None
+    flipkart_listing_file = None
+
+    if marketplace_type == "Flipkart":
+        st.info("📂 Upload one or both Flipkart files. At least one is required.")
+        col_cat, col_lst = st.columns(2)
+        with col_cat:
+            flipkart_catalog_file = st.file_uploader("Catalog File", type=["xlsx", "xls", "xlsm"], key="fk_catalog")
+        with col_lst:
+            flipkart_listing_file = st.file_uploader("Listing File", type=["xlsx", "xls", "xlsm"], key="fk_listing")
+        input_file = flipkart_catalog_file or flipkart_listing_file
+    else:
+        input_file = st.file_uploader("Upload Input Excel File", type=["xlsx", "xls", "xlsm"])
+
+    selected_variant_col = "(none)"
+    selected_product_col = "(none)"
+
+    if input_file:
+        selected_sheet = None
+        if marketplace_type == "General":
+            try:
+                xl     = pd.ExcelFile(input_file)
+                sheets = xl.sheet_names
+                selected_sheet = st.selectbox("Select sheet", sheets)
+            except Exception as e:
+                st.error(f"Failed to read sheets from uploaded file: {e}")
+                selected_sheet = None
+
+        try:
+            if marketplace_type == "Flipkart":
+                src_df = merge_flipkart_files(
+                    catalog_file=flipkart_catalog_file,
+                    listing_file=flipkart_listing_file
+                )
+            else:
+                src_df = read_input_to_df(
+                    input_file, marketplace_type,
+                    header_row=general_header_row,
+                    data_row=general_data_row,
+                    sheet_name=selected_sheet
+                )
+        except Exception as e:
+            st.error(f"Failed to parse uploaded file: {e}")
+            src_df = None
+
+        if src_df is not None:
+            if marketplace_type == "General":
+                st.markdown("**Sample data (first 3 rows)**")
+                st.dataframe(src_df.head(3))
+                cols = ["(none)"] + [str(c) for c in src_df.columns]
+                col1, col2 = st.columns(2)
+                with col1:
+                    selected_variant_col = st.selectbox("Style Code → productId (leave '(none)' to skip)", options=cols, index=0)
+                with col2:
+                    selected_product_col = st.selectbox("Seller SKU → variantId (leave '(none)' to skip)", options=cols, index=0)
+            else:
+                if marketplace_type == "Amazon":
+                    filtered = src_df.attrs.get("filtered_parent_rows", 0)
+                    if filtered:
+                        st.info(f"ℹ️ {filtered} Parent row(s) removed (Parentage Level = 'Parent')")
+                st.subheader("Preview (first 5 rows)")
+                try:
+                    st.dataframe(src_df.head(5))
+                except Exception as e:
+                    st.warning(f"Could not render preview: {e}")
+                    st.write(src_df.head(5).to_string())
+
+        st.markdown("---")
+
+        if marketplace_type == "General":
+            if st.button("Generate Output"):
+                with st.spinner("Processing…"):
+                    try:
+                        result, assigned_batch_id = process_file(
+                            input_file, marketplace_type,
+                            selected_variant_col=selected_variant_col,
+                            selected_product_col=selected_product_col,
+                            general_header_row=general_header_row,
+                            general_data_row=general_data_row,
+                            general_sheet_name=selected_sheet,
+                        )
+                        if result:
+                            out_name = get_output_filename(input_file.name, assigned_batch_id)
+                            st.success(f"✅ Output Generated! — BatchID assigned: **{assigned_batch_id}**")
+                            st.download_button(
+                                "📥 Download Output",
+                                data=result,
+                                file_name=out_name,
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="download_button"
+                            )
+                    except Exception as e:
+                        st.error(f"Processing failed: {e}")
+        else:
             with st.spinner("Processing…"):
                 try:
+                    _premerged = None
+                    if marketplace_type == "Flipkart":
+                        _premerged = merge_flipkart_files(
+                            catalog_file=flipkart_catalog_file,
+                            listing_file=flipkart_listing_file
+                        )
                     result, assigned_batch_id = process_file(
                         input_file, marketplace_type,
-                        selected_variant_col=selected_variant_col,
-                        selected_product_col=selected_product_col,
+                        selected_variant_col=None,
+                        selected_product_col=None,
                         general_header_row=general_header_row,
                         general_data_row=general_data_row,
-                        general_sheet_name=selected_sheet,
+                        general_sheet_name=None,
+                        premerged_df=_premerged,
                     )
                     if result:
+                        out_name = get_output_filename(input_file.name, assigned_batch_id)
                         st.success(f"✅ Output Generated! — BatchID assigned: **{assigned_batch_id}**")
                         st.download_button(
                             "📥 Download Output",
                             data=result,
-                            file_name=f"output_template_batch{assigned_batch_id}.xlsx",
+                            file_name=out_name,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key="download_button"
                         )
                 except Exception as e:
                     st.error(f"Processing failed: {e}")
     else:
-        with st.spinner("Processing…"):
-            try:
-                _premerged = None
-                if marketplace_type == "Flipkart":
-                    _premerged = merge_flipkart_files(
-                        catalog_file=flipkart_catalog_file,
-                        listing_file=flipkart_listing_file
-                    )
-                result, assigned_batch_id = process_file(
-                    input_file, marketplace_type,
-                    selected_variant_col=None,
-                    selected_product_col=None,
-                    general_header_row=general_header_row,
-                    general_data_row=general_data_row,
-                    general_sheet_name=None,
-                    premerged_df=_premerged,
-                )
-                if result:
-                    st.success(f"✅ Output Generated! — BatchID assigned: **{assigned_batch_id}**")
-                    st.download_button(
-                        "📥 Download Output",
-                        data=result,
-                        file_name=f"output_template_batch{assigned_batch_id}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="download_button"
-                    )
-            except Exception as e:
-                st.error(f"Processing failed: {e}")
-else:
-    st.info("Upload a file to enable header-detection and column selection dropdowns (General only).")
+        st.info("Upload a file to get started.")
 
 st.markdown("---")
 st.caption("Built for Rubick.ai | By Vishnu Sai")
