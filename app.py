@@ -114,7 +114,7 @@ MARKETPLACE_ID_MAP = {
     "Amazon":   ("Parent SKU", "SKU"),
     "Myntra":   ("styleId", "styleGroupId"),
     "Ajio":     ("*Item SKU", "*Style Code"),
-    "Flipkart": ("Seller SKU ID", "Style Code"),
+    "Flipkart": ("Style Code", "Seller SKU ID"),
     "TataCliq": ("Seller Article SKU", "*Style Code"),
     "Zivame":   ("Style Code", "SKU Code"),
     "Celio":    ("Style Code", "SKU Code"),
